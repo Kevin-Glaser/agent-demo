@@ -1,0 +1,8 @@
+{
+    "mcpServers": {
+        "product-mcp": {
+            "url": "http://localhost:8083/mcp",
+            "description": "A mcp server to fetch product information"
+        }
+    }
+}
