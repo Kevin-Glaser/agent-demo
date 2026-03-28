@@ -1,4 +1,5 @@
 import os
+import re
 import zipfile
 import tempfile
 import shutil
@@ -9,6 +10,10 @@ from models.skill import SkillInfo
 from skills.parser import SkillParser
 from core.config import settings
 from core.exceptions import SkillLoadError
+
+
+def sanitize_filename(name: str) -> str:
+    return re.sub(r'[<>:"|?*]', '_', name)
 
 
 class SkillLoader:
@@ -38,7 +43,8 @@ class SkillLoader:
                         
                         if skill_info and self.skills_directory:
                             skill_name = skill_info.name
-                            dest_dir = os.path.join(self.skills_directory, skill_name)
+                            safe_skill_name = sanitize_filename(skill_name)
+                            dest_dir = os.path.join(self.skills_directory, safe_skill_name)
                             
                             if os.path.exists(dest_dir):
                                 shutil.rmtree(dest_dir)

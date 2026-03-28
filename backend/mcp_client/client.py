@@ -62,6 +62,10 @@ class MCPClient:
         for tool_list in result:
             self.all_tools.extend(tool_list)
     
+    async def reload_tools(self):
+        await self.load_all_tools()
+        return len(self.all_tools)
+    
     async def call_tool(self, server: str, tool_name: str, params: Dict) -> CallToolResult:
         config = self.servers.get(server)
         if not config:

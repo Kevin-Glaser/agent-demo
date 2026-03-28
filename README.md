@@ -6,6 +6,7 @@ An extensible AI Agent Demo framework with MCP, Skills, and more
 
 [![Python Version](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.135.1+-green.svg)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/React-18-blue.svg)](https://react.dev/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 </div>
@@ -14,7 +15,7 @@ An extensible AI Agent Demo framework with MCP, Skills, and more
 
 ## 📖 Overview
 
-Agent Demo is a modern AI Agent framework built on FastAPI, supporting MCP protocol, Skills system, and more extensible features. It provides a flexible, extensible architecture that is perfect for building fun projects and learning about intelligent applications.
+Agent Demo is a modern AI Agent framework with a separated architecture. The backend is built on FastAPI supporting MCP protocol and Skills system, while the frontend is built on React + Vite with a sleek dark theme.
 
 ## ✨ Key Features
 
@@ -24,88 +25,83 @@ Agent Demo is a modern AI Agent framework built on FastAPI, supporting MCP proto
 - 🚀 **RESTful API**: Complete HTTP API interface
 - 📦 **Modular Architecture**: Clear layered design for easy maintenance and extension
 - ⚡ **Async Processing**: High-performance async architecture based on asyncio
+- 🎨 **Dark Theme UI**: Modern React frontend with dark theme
 - 🔧 **Tool Calling**: Support for automatic tool calling and multi-turn conversations
-- 💾 **Session Management**: Support for multi-session management and history
-- 🔮 **More Features**: Continuously expanding...
 
 > 📁 For detailed project structure and file descriptions, see [AGENTS.md](AGENTS.md)
 
 ## 🛠️ Tech Stack
 
-### Core Framework
+### Backend
 - **FastAPI** - Modern high-performance web framework
 - **Pydantic** - Data validation and settings management
-- **Pydantic Settings** - Environment variable and configuration management
-
-### AI & LLM
 - **OpenAI SDK** - OpenAI API client
 - **MCP SDK** - Model Context Protocol SDK
 
-### Utilities
-- **httpx** - Async HTTP client
-- **PyYAML** - YAML parser
-- **python-dotenv** - Environment variable management
+### Frontend
+- **React 18** - UI library
+- **Vite** - Build tool and dev server
+- **TypeScript** - Type safety
+- **Tailwind CSS** - Utility-first CSS
+- **Lucide React** - Icon library
 
 ## 🚀 Quick Start
 
 ### Requirements
 
 - Python 3.12 or higher
-- uv package manager (recommended) or pip
+- Node.js 18 or higher
+- pnpm package manager
+- uv package manager
 
 ### Installation
 
-1. **Clone the repository**
-```bash
-git clone <repository-url>
-cd agent-demo
-```
+#### 1. Backend
 
-2. **Install dependencies**
 ```bash
-# Using uv (recommended)
+cd backend
+
+# Create virtual environment
+uv venv
+
+# Install dependencies
 uv sync
 
-# Or using pip
-pip install -r requirements.txt
-```
-
-3. **Configure environment variables**
-```bash
-# Copy environment template
+# Configure environment variables
 cp .env.example .env
-
 # Edit .env file with your configuration
 ```
 
-4. **Configure MCP servers**
-```json
-// mcp.json
-{
-  "mcpServers": {
-    "your-server-name": {
-      "url": "http://localhost:3000/mcp"
-    }
-  }
-}
-```
+#### 2. Frontend
 
-5. **Run the application**
 ```bash
-# Using uv
-uv run python -m app.main
+cd frontend
 
-# Or run directly
-python -m app.main
+# Install dependencies
+pnpm install
 ```
 
-The application will start at `http://localhost:8002`
+### Running the Application
+
+#### Start Backend (in backend/ directory)
+
+```bash
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8002
+```
+
+#### Start Frontend (in frontend/ directory)
+
+```bash
+pnpm dev
+```
+
+The frontend will start at `http://localhost:5173` and automatically proxy API requests to the backend at `http://localhost:8002`.
 
 ## 📝 Configuration
 
-### Environment Variables
+### Backend Environment Variables
 
-Configure the following variables in `.env` file:
+Configure the following variables in `backend/.env` file:
 
 ```env
 # LLM Configuration
@@ -124,7 +120,7 @@ SKILLS_DIRECTORY=storage/skills
 
 ### MCP Server Configuration
 
-Configure MCP servers in `mcp.json`:
+Configure MCP servers in `backend/mcp.json`:
 
 ```json
 {
@@ -139,234 +135,79 @@ Configure MCP servers in `mcp.json`:
 
 ## 🎯 Features
 
-### 1. MCP Tool Calling
+### 1. Chat Interface
 
-Agent Demo supports automatic discovery and calling of tools provided by MCP servers:
+Modern dark-themed chat interface with:
+- Multi-turn conversation support
+- Automatic tool calling display
+- Loading states
 
-```python
-# Get all available tools
-GET /api/tools
+### 2. MCP Tool Management
 
-# Call a tool
-POST /api/call-tool
-{
-  "server": "server-name",
-  "name": "tool-name",
-  "args": {
-    "arg1": "value1"
-  }
-}
+- View all available MCP tools
+- Refresh to reload tools from MCP servers
+- Call tools directly from the UI
+
+### 3. Skills System
+
+- Upload skills as .zip packages
+- View installed skills
+- Delete skills
+
+## 📁 Project Structure
+
 ```
-
-### 2. Skills System
-
-The Skills system allows you to add domain-specific skills to your AI Agent:
-
-**Skill File Structure:**
+agent-demo/
+├── frontend/              # React + Vite frontend
+│   ├── src/
+│   │   ├── api/          # API calls
+│   │   ├── components/    # React components
+│   │   ├── types/        # TypeScript types
+│   │   └── App.tsx       # Main app
+│   └── package.json
+│
+├── backend/               # FastAPI backend
+│   ├── app/             # Application layer
+│   ├── core/            # Core utilities
+│   ├── llm/             # LLM integration
+│   ├── mcp_client/      # MCP client
+│   ├── models/          # Data models
+│   ├── skills/         # Skills management
+│   └── storage/        # File storage
+│
+├── README.md
+├── README_CN.md
+└── AGENTS.md
 ```
-skill-name/
-├── SKILL.md              # Required - Main Skill file
-├── scripts/              # Optional - Executable scripts
-├── references/           # Optional - Reference documents
-└── assets/               # Optional - Resource files
-```
-
-**SKILL.md Format:**
-```markdown
----
-name: skill-name
-description: Skill description. Use when user mentions [specific phrases].
-license: MIT
-compatibility: Compatibility notes
-metadata:
-  author: Author name
-  version: "1.0.0"
----
-
-# Skill Title
-
-## When to Use
-Explain when this skill should be used
-
-## Functionality
-Detailed functionality description
-
-## Examples
-Specific usage examples
-```
-
-**Skills API:**
-```http
-# Get all Skills
-GET /api/skills
-
-# Upload Skill
-POST /api/skills/upload
-Content-Type: multipart/form-data
-
-# Delete Skill
-DELETE /api/skills/{skill_name}
-```
-
-### 3. Chat Functionality
-
-Support for multi-turn conversations and automatic tool calling:
-
-```http
-POST /api/chat
-Content-Type: application/json
-
-{
-  "session_id": "session-123",
-  "message": "Help me analyze this code",
-  "history": []
-}
-```
-
-## 📚 API Documentation
-
-### Chat Endpoints
-
-**POST /api/chat**
-
-Initiate a chat request
-
-Request body:
-```json
-{
-  "session_id": "string",
-  "message": "string",
-  "history": [
-    {
-      "role": "user",
-      "content": "string"
-    }
-  ]
-}
-```
-
-Response:
-```json
-{
-  "response": "AI response",
-  "tool_calls": [],
-  "history": []
-}
-```
-
-### Skills Management
-
-**GET /api/skills**
-
-Get all loaded Skills
-
-**POST /api/skills/upload**
-
-Upload a new Skill (supports .zip format)
-
-**DELETE /api/skills/{skill_name}**
-
-Delete a specific Skill
-
-### MCP Tools
-
-**GET /api/tools**
-
-Get all available MCP tools
-
-**POST /api/call-tool**
-
-Call a specific MCP tool
-
-## 🔧 Development Guide
-
-### Adding a New LLM Service
-
-1. Create a new service file in `llm/` directory
-2. Inherit from base interface and implement methods
-3. Add new LLM option in configuration
-
-### Adding a New Skill
-
-1. Create Skill directory and SKILL.md file
-2. Package as .zip file
-3. Upload via API or place directly in `storage/skills/` directory
-
-### Adding a New MCP Server
-
-1. Add server configuration in `mcp.json`
-2. Restart application to auto-load
-
-## 🎨 Architecture Design
-
-### Layered Architecture
-
-- **Application Layer (app/)**: Handle HTTP requests and responses
-- **Core Layer (core/)**: Configuration management and core logic
-- **LLM Layer (llm/)**: Large language model interaction
-- **MCP Layer (mcp_client/)**: MCP protocol implementation
-- **Skills Layer (skills/)**: Skill management
-- **Models Layer (models/)**: Data model definitions
-- **Storage Layer (storage/)**: Data persistence
-
-### Design Patterns
-
-- **Dependency Injection**: Component decoupling for easy testing
-- **Single Responsibility**: Each module focuses on a single function
-- **Open-Closed Principle**: Open for extension, closed for modification
-- **Interface Segregation**: Use small and specialized interfaces
-
-## 📖 Best Practices
-
-1. **Skills Design**
-   - Maintain single responsibility
-   - Provide clear descriptions
-   - Include usage examples
-
-2. **Error Handling**
-   - Use custom exceptions
-   - Provide meaningful error messages
-   - Log detailed information
-
-3. **Performance Optimization**
-   - Use async operations
-   - Use caching appropriately
-   - Avoid blocking operations
 
 ## 🐛 Troubleshooting
 
 #### Skill Not Loading
-- Check if SKILL.md file exists
+- Check if SKILL.md file exists in the zip
 - Verify YAML frontmatter format
 - Ensure name and description fields exist
+- Skill names with special characters (like `:`) are sanitized for Windows compatibility
 
 #### MCP Connection Failed
 - Check if MCP server is running
 - Verify mcp.json configuration
-- Check network connection
+- Click refresh button to reload tools
 
-#### LLM Call Failed
-- Verify API Key is correct
-- Check API Base URL
-- Confirm model name is correct
+#### Frontend API Errors
+- Ensure backend is running on port 8002
+- Check CORS settings in backend
 
 ## 🤝 Contributing
 
 Contributions are welcome! Feel free to contribute code, report issues, or suggest ideas for fun projects!
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License.
 
 ## 🙏 Acknowledgments
 
 - [FastAPI](https://fastapi.tiangolo.com/) - Modern high-performance web framework
-- [OpenAI](https://openai.com/) - AI research and deployment
+- [React](https://react.dev/) - UI library
+- [Vite](https://vitejs.dev/) - Build tool
 - [MCP](https://modelcontextprotocol.io/) - Model Context Protocol
-- [Pydantic](https://pydantic-docs.helpmanual.io/) - Data validation

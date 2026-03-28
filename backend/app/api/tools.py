@@ -7,7 +7,9 @@ router = APIRouter()
 
 
 @router.get("/tools")
-async def get_tools():
+async def get_tools(reload: bool = False):
+    if reload:
+        await mcp_client.reload_tools()
     return {"tools": [t.model_dump() for t in mcp_client.all_tools]}
 
 

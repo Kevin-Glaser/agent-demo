@@ -1,8 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 
 from mcp_client.client import mcp_client
 from skills.manager import skill_manager
@@ -37,13 +35,6 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
-
-app.mount("/static", StaticFiles(directory="public"), name="static")
-
-
-@app.get("/")
-async def index():
-    return FileResponse("public/index.html")
 
 
 if __name__ == "__main__":

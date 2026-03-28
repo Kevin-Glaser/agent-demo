@@ -40,7 +40,9 @@ class SkillManager:
             {
                 "name": skill.name,
                 "description": skill.description,
-                "metadata": skill.metadata.model_dump() if skill.metadata else None
+                "license": skill.metadata.license if skill.metadata else None,
+                "compatibility": skill.metadata.compatibility if skill.metadata else None,
+                "metadata": skill.metadata.metadata if skill.metadata else None
             }
             for skill in self.skills.values()
         ]
