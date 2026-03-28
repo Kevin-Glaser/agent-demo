@@ -6,10 +6,13 @@ dist/
 wheels/
 *.egg-info
 
-
 # Virtual environments
 .venv
 
-# data
-storage/skills/
+# Skills data - uploaded skills go here (keep example skill)
+storage/skills/*
+!storage/skills/code-reviewer/
+storage/skills/code-reviewer/__pycache__/
+
+# Environment variables
 .env
