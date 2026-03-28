@@ -8,15 +8,22 @@ from core.config import settings
 from core.exceptions import LLMException
 from models.chat import ChatRequest, ChatResponse, CallToolResult
 from mcp_client.client import mcp_client
+from skills.manager import skill_manager
 
 
 class MessageBuilder:
     @staticmethod
     def build_messages(req: ChatRequest, skills_message: str = "") -> List[dict]:
-        base_system_content = "你是一个智能助手,可以使用各种 MCP 工具或者Skill来帮助用户完成任务。如果不需要使用工具,直接返回回答。"
+        base_system_content = """你是一个智能助手。
+
+你有两种扩展能力:
+1. **MCP工具** - 来自外部MCP服务器的功能调用
+2. **自定义Skills** - 你可以使用的专业技能
+
+当需要使用某个技能时,使用 skill 工具加载该技能。"""
         
         if skills_message:
-            system_content = f"{base_system_content}\n\n{skills_message}"
+            system_content = f"{base_system_content}\n\n<available_skills>\n{skills_message}\n</available_skills>"
         else:
             system_content = base_system_content
         
@@ -56,6 +63,22 @@ class ToolExecutor:
         function_name = tool_call.function.name
         arguments = json.loads(tool_call.function.arguments)
         
+        if function_name == "skill":
+            skill_name = arguments.get("name", "")
+            skill = skill_manager.get_skill(skill_name)
+            if not skill:
+                available = [s.name for s in skill_manager.get_all_skills()]
+                return CallToolResult(
+                    name="skill",
+                    result=f"技能 '{skill_name}' 不存在。可用技能: {', '.join(available) if available else '无'}",
+                    call_tool_id=tool_call.id
+                )
+            return CallToolResult(
+                name="skill",
+                result=f"已加载技能: {skill.name}\n\n描述: {skill.description}\n\n{skill.skill_md_content}",
+                call_tool_id=tool_call.id
+            )
+        
         parts = function_name.split('_', 1)
         if len(parts) == 2:
             server_name, tool_name = parts
@@ -89,18 +112,57 @@ class OpenAIService:
         self.message_builder = MessageBuilder()
         self.tool_executor = ToolExecutor()
     
+    def _build_skill_tool_description(self) -> str:
+        skills = skill_manager.get_all_skills()
+        if not skills:
+            return "加载技能。当没有可用的技能时不要调用此工具。"
+        
+        skill_list = ", ".join([s.name for s in skills])
+        return f"""加载技能。使用 skill 工具加载指定技能的完整内容。
+
+可用技能: {skill_list}"""
+    
+    def _build_skill_tool(self) -> dict:
+        skills = skill_manager.get_all_skills()
+        skill_names = [s.name for s in skills]
+        hint = f"可用技能: {', '.join(skill_names)}" if skill_names else "无可用技能"
+        
+        return {
+            "type": "function",
+            "function": {
+                "name": "skill",
+                "description": self._build_skill_tool_description(),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": hint
+                        }
+                    },
+                    "required": ["name"]
+                }
+            }
+        }
+    
     def build_openai_tools(self) -> List[dict]:
-        return [
-            {
+        tools = []
+        
+        skill_tool = self._build_skill_tool()
+        if skill_tool:
+            tools.append(skill_tool)
+        
+        for tc in mcp_client.all_tools:
+            tools.append({
                 "type": "function",
                 "function": {
                     "name": f"{tc.server}_{tc.name}",
                     "description": f"{tc.server} {tc.description}",
                     "parameters": tc.input_schema
                 }
-            }
-            for tc in mcp_client.all_tools
-        ]
+            })
+        
+        return tools
     
     async def chat(self, req: ChatRequest, skills_message: str = "") -> ChatResponse:
         try:

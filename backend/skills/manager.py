@@ -63,17 +63,13 @@ class SkillManager:
     
     def build_skills_system_message(self) -> str:
         if not self.skills:
-            return ""
+            return "<skill>\n  <name>无可用技能</name>\n  <description>当前没有可用的技能</description>\n</skill>"
         
-        skills_intro = "你拥有以下技能(Skills),可以根据需要自动调用:\n\n"
-        
+        skills_xml = []
         for skill in self.skills.values():
-            skills_intro += f"**技能名称**: {skill.name}\n"
-            skills_intro += f"**描述**: {skill.description}\n\n"
+            skills_xml.append(f"  <skill>\n    <name>{skill.name}</name>\n    <description>{skill.description}</description>\n  </skill>")
         
-        skills_intro += "当用户的请求与某个技能相关时,你应该主动使用该技能来完成任务。\n"
-        
-        return skills_intro
+        return "\n".join(skills_xml)
 
 
 skill_manager = SkillManager()

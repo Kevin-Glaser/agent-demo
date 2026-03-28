@@ -1,7 +1,5 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException
 from models.chat import ChatRequest
-from models.common import CallToolRequest
-from mcp_client.client import mcp_client
 from llm.openai_service import llm_service
 from skills.manager import skill_manager
 
