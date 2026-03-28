@@ -28,6 +28,8 @@ Agent Demo 是一个基于 FastAPI 构建的现代化 AI Agent 框架，支持 M
 - 💾 **会话管理**: 支持多会话管理和历史记录
 - 🔮 **更多功能**: 持续扩展中...
 
+> 📁 详细的项目结构和文件说明请参考 [AGENTS.md](AGENTS.md)
+
 ## 🛠️ 技术栈
 
 ### 核心框架
@@ -44,51 +46,7 @@ Agent Demo 是一个基于 FastAPI 构建的现代化 AI Agent 框架，支持 M
 - **PyYAML** - YAML 解析器
 - **python-dotenv** - 环境变量管理
 
-## 📁 项目结构
-
-```
-agent-demo/
-├── app/                           # 应用层
-│   ├── main.py                    # FastAPI 主应用
-│   └── api/                       # API 路由
-│       ├── chat.py               # 聊天接口
-│       ├── skills.py             # Skills 管理
-│       └── tools.py              # MCP 工具管理
-│
-├── core/                          # 核心层
-│   ├── config.py                  # 配置管理
-│   └── exceptions.py              # 自定义异常
-│
-├── llm/                           # LLM 模块
-│   └── openai_service.py          # OpenAI 服务实现
-│
-├── mcp_client/                    # MCP 客户端模块
-│   └── client.py                  # MCP 客户端实现
-│
-├── skills/                        # Skills 模块
-│   ├── manager.py                 # Skill 管理器
-│   ├── loader.py                  # Skill 加载器
-│   └── parser.py                  # SKILL.md 解析器
-│
-├── models/                        # 数据模型层
-│   ├── chat.py                    # 聊天模型
-│   ├── mcp.py                     # MCP 模型
-│   ├── skill.py                   # Skill 模型
-│   └── common.py                  # 通用模型
-│
-├── storage/                       # 存储层
-│   └── skills/                    # Skills 文件存储
-│
-├── public/                        # 前端静态文件
-│   └── index.html
-│
-├── .env                           # 环境变量
-├── .env.example                   # 环境变量示例
-├── mcp.json                       # MCP 服务器配置
-└── pyproject.toml                 # 项目配置
-```
-
-## 🚀 快速开始
+##  快速开始
 
 ### 环境要求
 

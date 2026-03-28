@@ -28,6 +28,8 @@ Agent Demo is a modern AI Agent framework built on FastAPI, supporting MCP proto
 - 💾 **Session Management**: Support for multi-session management and history
 - 🔮 **More Features**: Continuously expanding...
 
+> 📁 For detailed project structure and file descriptions, see [AGENTS.md](AGENTS.md)
+
 ## 🛠️ Tech Stack
 
 ### Core Framework
@@ -43,50 +45,6 @@ Agent Demo is a modern AI Agent framework built on FastAPI, supporting MCP proto
 - **httpx** - Async HTTP client
 - **PyYAML** - YAML parser
 - **python-dotenv** - Environment variable management
-
-## 📁 Project Structure
-
-```
-agent-demo/
-├── app/                           # Application Layer
-│   ├── main.py                    # FastAPI main application
-│   └── api/                       # API routes
-│       ├── chat.py               # Chat endpoints
-│       ├── skills.py             # Skills management
-│       └── tools.py              # MCP tools management
-│
-├── core/                          # Core Layer
-│   ├── config.py                  # Configuration management
-│   └── exceptions.py              # Custom exceptions
-│
-├── llm/                           # LLM Module
-│   └── openai_service.py          # OpenAI service implementation
-│
-├── mcp_client/                    # MCP Client Module
-│   └── client.py                  # MCP client implementation
-│
-├── skills/                        # Skills Module
-│   ├── manager.py                 # Skill manager
-│   ├── loader.py                  # Skill loader
-│   └── parser.py                  # SKILL.md parser
-│
-├── models/                        # Data Models Layer
-│   ├── chat.py                    # Chat models
-│   ├── mcp.py                     # MCP models
-│   ├── skill.py                   # Skill models
-│   └── common.py                  # Common models
-│
-├── storage/                       # Storage Layer
-│   └── skills/                    # Skills file storage
-│
-├── public/                        # Frontend static files
-│   └── index.html
-│
-├── .env                           # Environment variables
-├── .env.example                   # Environment variables example
-├── mcp.json                       # MCP server configuration
-└── pyproject.toml                 # Project configuration
-```
 
 ## 🚀 Quick Start
 
