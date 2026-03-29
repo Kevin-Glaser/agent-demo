@@ -1,4 +1,3 @@
-from backend.models.skill import SkillInfo
 import os
 import re
 import glob

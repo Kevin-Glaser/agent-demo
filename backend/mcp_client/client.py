@@ -56,10 +56,13 @@ class MCPClient:
             self.get_tools_from_server(server, config)
             for server, config in self.servers.items()
         ]
-        result = await asyncio.gather(*tasks)
+        result = await asyncio.gather(*tasks, return_exceptions=True)
         
         self.all_tools.clear()
         for tool_list in result:
+            if isinstance(tool_list, Exception):
+                logger.warning(f"Task failed with exception: {tool_list}")
+                continue
             self.all_tools.extend(tool_list)
     
     async def reload_tools(self):
