@@ -116,6 +116,9 @@ MCP_CONFIG_PATH=mcp.json
 
 # Skills Configuration
 SKILLS_DIRECTORY=storage/skills
+SKILLS_EXTRA_DIRS=                    # Extra skill directories (comma-separated)
+SKILLS_MAX_IN_PROMPT=50              # Max skills in prompt before switching to compact format
+SKILLS_MAX_PROMPT_CHARS=8000         # Max characters before switching to compact format
 ```
 
 ### MCP Server Configuration
@@ -153,6 +156,8 @@ Modern dark-themed chat interface with:
 - Upload skills as .zip packages
 - View installed skills
 - Delete skills
+- Hot reload: Skills are automatically reloaded when files change
+- Token optimization: Auto-switches to compact format when limits exceeded
 
 ## 📁 Project Structure
 

@@ -116,6 +116,9 @@ MCP_CONFIG_PATH=mcp.json
 
 # Skills 配置
 SKILLS_DIRECTORY=storage/skills
+SKILLS_EXTRA_DIRS=                    # 额外技能目录，逗号分隔
+SKILLS_MAX_IN_PROMPT=50             # 最大 skill 数量
+SKILLS_MAX_PROMPT_CHARS=8000        # 最大字符数
 ```
 
 ### MCP 服务器配置
@@ -153,6 +156,8 @@ SKILLS_DIRECTORY=storage/skills
 - 上传 .zip 格式的技能包
 - 查看已安装的技能
 - 删除技能
+- 热重载：文件变化时自动重新加载
+- Token 优化：超过限制时自动切换紧凑格式
 
 ## 📁 项目结构
 

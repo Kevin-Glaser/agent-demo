@@ -13,10 +13,13 @@ async def lifespan(app: FastAPI):
     mcp_client.load_config()
     await mcp_client.load_all_tools()
     
-    skill_manager.set_skills_directory(settings.SKILLS_DIRECTORY)
+    skill_manager.set_skills_directories(settings.get_skills_directories())
     skill_manager.load_all_skills()
+    skill_manager.start_watcher()
     
     yield
+    
+    skill_manager.stop_watcher()
 
 
 app = FastAPI(

@@ -49,7 +49,8 @@ agent-demo/
 │   ├── skills/                   # Skills 模块
 │   │   ├── __init__.py
 │   │   ├── manager.py            # Skill 管理器 - 管理技能生命周期
-│   │   ├── loader.py             # Skill 加载器 - 从目录/压缩包加载
+│   │   ├── loader.py             # Skill 加载器 - 多来源加载
+│   │   ├── watcher.py            # Skill 文件监视器 - 热重载支持
 │   │   └── parser.py             # SKILL.md 解析器 - 解析技能定义文件
 │   │
 │   ├── models/                   # 数据模型层
@@ -180,7 +181,10 @@ MCP 工具 API，提供：
 - `TEMPERATURE` - 生成温度
 - `MAX_RETRIES` - 最大重试次数
 - `MCP_CONFIG_PATH` - MCP 配置文件路径
-- `SKILLS_DIRECTORY` - Skills 存储目录
+- `SKILLS_DIRECTORY` - Skills 主存储目录
+- `SKILLS_EXTRA_DIRS` - 额外 Skills 目录（逗号分隔）
+- `SKILLS_MAX_IN_PROMPT` - 最大 skill 数量，超过用紧凑格式
+- `SKILLS_MAX_PROMPT_CHARS` - 最大字符数，超过用紧凑格式
 
 #### `backend/core/exceptions.py`
 自定义异常类定义：
@@ -228,18 +232,35 @@ Skill 管理器：
 
 **SkillManager 类**
 - 管理技能的加载、获取、删除
-- 构建 Skills 系统提示词
+- 支持多来源加载（多个目录）
+- 构建 Skills 系统提示词（支持紧凑格式）
+- 热重载支持（文件变化自动刷新）
+- Token 优化（自动切换紧凑格式）
 - 维护技能注册表
 
 **全局实例 `skill_manager`**
 - 项目启动时自动初始化的单例实例
 
+#### `backend/skills/watcher.py`
+Skill 文件监视器：
+
+**SkillWatcher 类**
+- 使用 watchdog 监控 skill 文件变化
+- 支持 SKILL.md 和 .zip 文件变化检测
+- 防抖机制（500ms）
+- 自动重新加载 skills
+
+**SkillFileHandler 类**
+- 处理文件创建、修改、删除事件
+- 触发 reload 回调
+
 #### `backend/skills/loader.py`
 Skill 加载器：
 
 **SkillLoader 类**
-- 从目录加载 Skill
+- 从多个目录加载 Skill（多来源）
 - 从 ZIP 压缩包加载 Skill
+- 扫描 SKILL.md 文件
 - 批量加载目录下所有 Skill
 
 **`sanitize_filename()` 函数**
@@ -301,6 +322,24 @@ MCP 服务器配置文件，定义可连接的 MCP 服务器：
 #### `backend/.env.example`
 环境变量示例模板，用于指导用户配置 `.env` 文件。
 
+```env
+# LLM 配置
+OPENAI_API_KEY=your_api_key_here
+OPENAI_API_BASE=https://api.deepseek.com/v1
+LLM_MODEL=deepseek-chat
+TEMPERATURE=0.7
+MAX_RETRIES=3
+
+# MCP 配置
+MCP_CONFIG_PATH=mcp.json
+
+# Skills 配置
+SKILLS_DIRECTORY=storage/skills
+SKILLS_EXTRA_DIRS=                    # 额外技能目录，逗号分隔
+SKILLS_MAX_IN_PROMPT=50             # 最大 skill 数量
+SKILLS_MAX_PROMPT_CHARS=8000        # 最大字符数
+```
+
 ### 前端 (frontend/)
 
 #### `frontend/src/App.tsx`
@@ -334,6 +373,34 @@ TypeScript 类型定义。
 6. **工具调用**（如需要）→ `ToolExecutor.execute_tool_call()`
 7. **MCP 调用** → `backend/mcp_client/client.py`
 8. **返回结果** → `ChatResponse` → 前端显示
+
+## Skills 系统高级特性
+
+### 多来源加载
+
+Skills 支持从多个目录加载，通过 `SKILLS_EXTRA_DIRS` 配置：
+
+```env
+SKILLS_DIRECTORY=storage/skills
+SKILLS_EXTRA_DIRS=~/.claude/skills,C:\Users\custom\skills
+```
+
+相同名称的 skill 只会加载一次，优先使用先配置的目录中的版本。
+
+### 热重载
+
+当 `storage/skills/` 目录下的 `SKILL.md` 或 `.zip` 文件发生变化时，系统会自动重新加载 skills。无需重启服务。
+
+### Token 优化
+
+当 skill 数量或字符数超过阈值时，自动切换到紧凑格式：
+
+- **Verbose 格式**：包含 name + description
+- **Compact 格式**：只包含 name + location（文件路径）
+
+可配置项：
+- `SKILLS_MAX_IN_PROMPT=50` - 最大 skill 数量
+- `SKILLS_MAX_PROMPT_CHARS=8000` - 最大字符数
 
 ## 扩展指南
 
