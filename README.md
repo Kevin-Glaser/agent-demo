@@ -144,6 +144,7 @@ Modern dark-themed chat interface with:
 - Multi-turn conversation support
 - Automatic tool calling display
 - Loading states
+![alt text](image-1.png)
 
 ### 2. MCP Tool Management
 
