@@ -28,8 +28,6 @@ Agent Demo is a modern AI Agent framework with a separated architecture. The bac
 - 🎨 **Dark Theme UI**: Modern React frontend with dark theme
 - 🔧 **Tool Calling**: Support for automatic tool calling and multi-turn conversations
 
-> 📁 For detailed project structure and file descriptions, see [AGENTS.md](AGENTS.md)
-
 ## 🛠️ Tech Stack
 
 ### Backend
