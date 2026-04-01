@@ -16,3 +16,14 @@ storage/skills/code-reviewer/__pycache__/
 
 # Environment variables
 .env
+.claude/
+
+# Test artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+tests/.pytest_cache/
+frontend/coverage/
+frontend/test-results/
+frontend/vitest-ui/

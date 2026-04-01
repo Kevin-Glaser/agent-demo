@@ -383,57 +383,57 @@ class OpenAIService:
             reasoning_content = ""
             tool_calls_buffer: Dict[int, Dict[str, Any]] = {}
             reasoning_part: Optional[MessagePart] = None
-            
-            async with self.client.chat.completions.create(**kwargs) as stream:
-                async for chunk in stream:
-                    if not chunk.choices:
-                        continue
-                    
-                    delta = chunk.choices[0].delta
-                    if not delta:
-                        continue
-                    
-                    if hasattr(delta, 'reasoning') and delta.reasoning:
-                        if not reasoning_part:
-                            reasoning_part = MessagePart(
-                                part_type=PartType.REASONING.value,
-                                content="",
-                                token_count=0
+
+            stream = await self.client.chat.completions.create(**kwargs)
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+
+                delta = chunk.choices[0].delta
+                if not delta:
+                    continue
+
+                if hasattr(delta, 'reasoning') and delta.reasoning:
+                    if not reasoning_part:
+                        reasoning_part = MessagePart(
+                            part_type=PartType.REASONING.value,
+                            content="",
+                            token_count=0
+                        )
+                    reasoning_content += delta.reasoning
+                    yield build_sse_chunk("reasoning-delta", delta.reasoning, delta=delta.reasoning)
+                    continue
+
+                if hasattr(delta, 'content') and delta.content:
+                    yield build_sse_chunk("text-delta", delta.content, delta=delta.content)
+
+                if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        index = tc_delta.index
+                        if index not in tool_calls_buffer:
+                            tool_calls_buffer[index] = {
+                                "id": "",
+                                "name": "",
+                                "arguments": ""
+                            }
+
+                        if hasattr(tc_delta.id) and tc_delta.id:
+                            tool_calls_buffer[index]["id"] = tc_delta.id
+                        if hasattr(tc_delta.function) and tc_delta.function:
+                            if hasattr(tc_delta.function, 'name') and tc_delta.function.name:
+                                tool_calls_buffer[index]["name"] = tc_delta.function.name
+                            if hasattr(tc_delta.function, 'arguments') and tc_delta.function.arguments:
+                                tool_calls_buffer[index]["arguments"] += tc_delta.function.arguments
+
+                        if tool_calls_buffer[index]["name"]:
+                            yield build_sse_chunk(
+                                "tool-call",
+                                "",
+                                tool_call_id=tool_calls_buffer[index]["id"],
+                                tool_name=tool_calls_buffer[index]["name"],
+                                tool_input=tool_calls_buffer[index]["arguments"]
                             )
-                        reasoning_content += delta.reasoning
-                        yield build_sse_chunk("reasoning-delta", delta.reasoning, delta=delta.reasoning)
-                        continue
-                    
-                    if hasattr(delta, 'content') and delta.content:
-                        yield build_sse_chunk("text-delta", delta.content, delta=delta.content)
-                    
-                    if hasattr(delta, 'tool_calls') and delta.tool_calls:
-                        for tc_delta in delta.tool_calls:
-                            index = tc_delta.index
-                            if index not in tool_calls_buffer:
-                                tool_calls_buffer[index] = {
-                                    "id": "",
-                                    "name": "",
-                                    "arguments": ""
-                                }
-                            
-                            if hasattr(tc_delta.id) and tc_delta.id:
-                                tool_calls_buffer[index]["id"] = tc_delta.id
-                            if hasattr(tc_delta.function) and tc_delta.function:
-                                if hasattr(tc_delta.function, 'name') and tc_delta.function.name:
-                                    tool_calls_buffer[index]["name"] = tc_delta.function.name
-                                if hasattr(tc_delta.function, 'arguments') and tc_delta.function.arguments:
-                                    tool_calls_buffer[index]["arguments"] += tc_delta.function.arguments
-                            
-                            if tool_calls_buffer[index]["name"]:
-                                yield build_sse_chunk(
-                                    "tool-call",
-                                    "",
-                                    tool_call_id=tool_calls_buffer[index]["id"],
-                                    tool_name=tool_calls_buffer[index]["name"],
-                                    tool_input=tool_calls_buffer[index]["arguments"]
-                                )
-            
+
             if reasoning_content:
                 self.conversation_manager.compaction.reasoning_tokens = len(reasoning_content) // 4
             
@@ -521,6 +521,188 @@ class OpenAIService:
             
             yield build_sse_chunk("done", content="")
             
+        except Exception as e:
+            yield build_sse_chunk("error", content=str(e))
+
+
+    async def _create_llm_stream(self, messages: List[Dict], system: str, tools: List[Dict], tool_choice: str = "auto") -> AsyncGenerator[StreamChunk, None]:
+        """
+        Create an LLM stream generator compatible with run_loop.
+
+        Args:
+            messages: List of message dicts
+            system: System prompt
+            tools: List of tool definitions
+            tool_choice: Tool choice setting
+
+        Yields:
+            StreamChunk objects from the LLM response
+        """
+        def build_chunk(chunk_type: str, content: str = "", **kwargs) -> StreamChunk:
+            return StreamChunk(
+                chunk_type=chunk_type,
+                content=content,
+                **kwargs
+            )
+
+        kwargs = {
+            "model": settings.LLM_MODEL,
+            "temperature": settings.TEMPERATURE,
+            "messages": messages,
+            "stream": True
+        }
+
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = tool_choice
+
+        reasoning_content = ""
+        tool_calls_buffer: Dict[int, Dict[str, Any]] = {}
+
+        stream = await self.client.chat.completions.create(**kwargs)
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+
+            delta = chunk.choices[0].delta
+            if not delta:
+                continue
+
+            # Handle reasoning
+            if hasattr(delta, 'reasoning') and delta.reasoning:
+                if not reasoning_content:
+                    yield build_chunk("reasoning-start", reasoning_content)
+                reasoning_content += delta.reasoning
+                yield build_chunk("reasoning-delta", delta.reasoning, delta=delta.reasoning)
+                continue
+
+            # Handle content
+            if hasattr(delta, 'content') and delta.content:
+                yield build_chunk("text-delta", delta.content, delta=delta.content)
+
+            # Handle tool calls
+            if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    index = tc_delta.index
+                    if index not in tool_calls_buffer:
+                        tool_calls_buffer[index] = {
+                            "id": "",
+                            "name": "",
+                            "arguments": ""
+                        }
+
+                    if hasattr(tc_delta.id) and tc_delta.id:
+                        tool_calls_buffer[index]["id"] = tc_delta.id
+                    if hasattr(tc_delta.function) and tc_delta.function:
+                        if hasattr(tc_delta.function, 'name') and tc_delta.function.name:
+                            tool_calls_buffer[index]["name"] = tc_delta.function.name
+                        if hasattr(tc_delta.function, 'arguments') and tc_delta.function.arguments:
+                            tool_calls_buffer[index]["arguments"] += tc_delta.function.arguments
+
+                    if tool_calls_buffer[index]["name"]:
+                        yield build_chunk(
+                            "tool-call",
+                            "",
+                            tool_call_id=tool_calls_buffer[index]["id"],
+                            tool_name=tool_calls_buffer[index]["name"],
+                            tool_input=tool_calls_buffer[index]["arguments"]
+                        )
+
+        # Finalize reasoning
+        if reasoning_content:
+            yield build_chunk("reasoning-end", reasoning_content)
+
+        # Handle tool results if any tool calls were made
+        if tool_calls_buffer:
+            for idx in sorted(tool_calls_buffer.keys()):
+                tc_data = tool_calls_buffer[idx]
+                if tc_data["id"] and tc_data["name"]:
+                    # Execute tool and yield result
+                    result = await self.tool_executor.execute_tool_call_by_data(
+                        tool_call_id=tc_data["id"],
+                        tool_name=tc_data["name"],
+                        arguments=tc_data["arguments"]
+                    )
+                    yield build_chunk(
+                        "tool-result",
+                        result.result or result.error or "",
+                        tool_call_id=tc_data["id"],
+                        tool_name=tc_data["name"]
+                    )
+
+        yield build_chunk("done", "")
+
+    def _summarize(self, prompt: str) -> str:
+        """Summarize prompt for compaction (sync wrapper)."""
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop.run_until_complete(self._summarize_async(prompt))
+
+    async def _summarize_async(self, prompt: str) -> str:
+        """Async version of summarize."""
+        try:
+            response = await self.client.chat.completions.create(
+                model=settings.LLM_MODEL,
+                temperature=0.5,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response.choices[0].message.content or "[对话已压缩]"
+        except Exception as e:
+            print(f"Summary failed: {e}")
+            return "[对话已压缩]"
+
+    async def run_loop_chat(self, req: ChatRequest, skills_message: str = "", max_steps: int = 100) -> AsyncGenerator[str, None]:
+        """
+        Run the chat using the full loop mechanism
+
+        This implements multi-turn conversations with:
+        - Full loop control (while + step tracking)
+        - AbortController support
+        - filter_compacted for message filtering
+        - lastUser/lastAssistant/lastFinished tracking
+        - Exit condition checking
+        - Task processing (subtask/compaction)
+        - SessionProcessor for stream handling
+        - insertReminders for multi-turn
+        - Structured output support
+
+        Args:
+            req: ChatRequest with the user's message
+            skills_message: Skills system message
+            max_steps: Maximum number of loop iterations
+
+        Yields:
+            SSE formatted chunks
+        """
+        def build_sse_chunk(chunk_type: str, content: str = "", **kwargs) -> str:
+            chunk = {
+                "chunk_type": chunk_type,
+                "content": content,
+                **kwargs
+            }
+            return f"data: {json.dumps(chunk)}\n\n"
+
+        try:
+            # Add user message to conversation
+            self.conversation_manager.add_user_message(req.message)
+
+            # Create the LLM stream generator factory
+            async def llm_stream_generator(messages: List[Dict], system: str, tools: List[Dict], tool_choice: str = "auto"):
+                return self._create_llm_stream(messages, system, tools, tool_choice)
+
+            # Run the loop
+            stats = await self.conversation_manager.run_loop(
+                llm_summarize=self._summarize,
+                llm_stream_generator=llm_stream_generator,
+                max_steps=max_steps
+            )
+
+            # Yield final stats
+            yield build_sse_chunk("done", content=json.dumps(stats))
+
         except Exception as e:
             yield build_sse_chunk("error", content=str(e))
 

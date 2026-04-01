@@ -32,38 +32,38 @@ class MCPClient:
     
     async def get_tools_from_server(self, server: str, config: MCPServerConfig) -> List[MCPToolInfo]:
         try:
-            async with streamable_http_client(config.url) as (read, write, _):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    result = await session.list_tools()
-                    
-                    tool_list = []
-                    for item in result.tools:
-                        tool = MCPToolInfo(
-                            server=server,
-                            name=item.name,
-                            description=item.description or "无描述",
-                            input_schema=item.inputSchema or {"type": "object", "properties": {}}
-                        )
-                        tool_list.append(tool)
-                    return tool_list
+            async with asyncio.timeout(10):
+                async with streamable_http_client(config.url) as (read, write, _):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        result = await session.list_tools()
+
+                        tool_list = []
+                        for item in result.tools:
+                            tool = MCPToolInfo(
+                                server=server,
+                                name=item.name,
+                                description=item.description or "无描述",
+                                input_schema=item.inputSchema or {"type": "object", "properties": {}}
+                            )
+                            tool_list.append(tool)
+                        return tool_list
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout connecting to MCP server {server} at {config.url}")
+            return []
         except Exception as e:
             logger.warning(f"Failed to connect to MCP server {server}: {e}")
             return []
     
     async def load_all_tools(self):
-        tasks = [
-            self.get_tools_from_server(server, config)
-            for server, config in self.servers.items()
-        ]
-        result = await asyncio.gather(*tasks, return_exceptions=True)
-        
         self.all_tools.clear()
-        for tool_list in result:
-            if isinstance(tool_list, Exception):
-                logger.warning(f"Task failed with exception: {tool_list}")
-                continue
-            self.all_tools.extend(tool_list)
+
+        for server, config in self.servers.items():
+            try:
+                tools = await self.get_tools_from_server(server, config)
+                self.all_tools.extend(tools)
+            except Exception as e:
+                logger.warning(f"Failed to load tools from server {server}: {e}")
     
     async def reload_tools(self):
         await self.load_all_tools()

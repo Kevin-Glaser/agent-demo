@@ -1,4 +1,5 @@
 import time
+import json
 import asyncio
 from typing import List, Dict, Any, Optional, Callable, AsyncGenerator, Literal
 from dataclasses import dataclass, field
@@ -15,14 +16,8 @@ class PartType(Enum):
     TOOL = "tool"
     REASONING = "reasoning"
     COMPACTION = "compaction"
-    FILE = "file"
+    FILE = "file"           # 统一处理：IMAGE, AUDIO, VIDEO, EMBEDDING 等通过 mime 类型区分
     SNAPSHOT = "snapshot"
-    IMAGE = "image"
-    AUDIO = "audio"
-    VIDEO = "video"
-    EMBEDDING = "embedding"
-    FUNCTION_RESULT = "function_result"
-    STREAMING = "streaming"
     STEP_START = "step-start"
     STEP_FINISH = "step-finish"
     PATCH = "patch"
@@ -56,6 +51,7 @@ class ToolState:
     created: float = field(default_factory=time.time)
     updated: float = field(default_factory=time.time)
     compacted: Optional[float] = None
+    attachments: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -72,6 +68,7 @@ class MessagePart:
     token_count: int = 0
     media_url: Optional[str] = None
     media_mime_type: Optional[str] = None
+    filename: Optional[str] = None
     streaming_content: Optional[str] = None
     is_streaming_done: bool = False
     snapshot_data: Optional[Dict[str, Any]] = None
@@ -115,6 +112,7 @@ class StreamChunk:
     tool_input: Optional[str] = None
     tool_output: Optional[str] = None
     delta: Optional[str] = None
+    attachments: List[Dict[str, Any]] = field(default_factory=list)  # mime, url for tool results
 
 
 @dataclass
@@ -263,6 +261,18 @@ def isMedia(mime_type: str) -> bool:
 
 
 CONTINUE_MESSAGE = "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
+
+STRUCTURED_OUTPUT_DESCRIPTION = """Use this tool to return your final response in the requested structured format.
+
+IMPORTANT:
+- You MUST call this tool exactly once at the end of your response
+- The input must be valid JSON matching the required schema
+- Complete all necessary research and tool calls BEFORE calling this tool
+- This tool provides your final answer - no further actions are taken after calling it"""
+
+STRUCTURED_OUTPUT_SYSTEM_PROMPT = """IMPORTANT: The user has requested structured output. You MUST use the StructuredOutput tool to provide your final response. Do NOT respond with plain text - you MUST call the StructuredOutput tool with your answer formatted according to the schema."""
+
+MAX_STEPS_MESSAGE = "You have reached the maximum number of steps. Please provide your final response now."
 
 
 class ConversationCompaction:
@@ -479,6 +489,8 @@ class ConversationCompaction:
                                     tool_part.tool_state.status = ToolCallState.COMPLETED
                                     tool_part.tool_state.output = tool_part.content
                                     tool_part.tool_state.updated = time.time()
+                                    if chunk.attachments:
+                                        tool_part.tool_state.attachments = chunk.attachments
                                 msg.completed_tool_count += 1
                                 msg.pending_tool_count = max(0, msg.pending_tool_count - 1)
                             break
@@ -575,7 +587,47 @@ class ConversationCompaction:
                     "completed": part.tool_call_state == ToolCallState.COMPLETED
                 }
         return states
-    
+
+    def insert_reminders(self, last_finished_id: str = None) -> None:
+        """
+        Insert system reminders into user messages
+
+        After the first turn, wraps queued user messages with a reminder to stay on track.
+        This is called when step > 1 and there's a lastFinished message.
+        """
+        if not self.messages:
+            return
+
+        for msg in self.messages:
+            # Only process user messages
+            if msg.role != "user":
+                continue
+
+            # Skip if this user message is before or equal to lastFinished
+            if last_finished_id and msg.message_id <= last_finished_id:
+                continue
+
+            # Find text parts that are not ignored and not synthetic
+            for part in msg.parts:
+                if part.part_type == PartType.TEXT.value and not part.ignored:
+                    if hasattr(part, 'streaming_content') and part.streaming_content:
+                        text = part.streaming_content
+                    else:
+                        text = part.content
+
+                    if text and text.strip():
+                        # Wrap with system reminder
+                        wrapped_text = [
+                            "<system-reminder>",
+                            "The user sent the following message:",
+                            text,
+                            "",
+                            "Please address this message and continue with your tasks.",
+                            "</system-reminder>",
+                        ]
+                        part.content = "\n".join(wrapped_text)
+                        part.streaming_content = "\n".join(wrapped_text)
+
     def get_messages_for_llm(self, strip_media: bool = False, include_reasoning: bool = True) -> List[Dict[str, Any]]:
         result = []
         for msg in self.messages:
@@ -613,39 +665,29 @@ class ConversationCompaction:
                         elif part.tool_call_state == ToolCallState.EXECUTING:
                             parts_content.append(f"[{part.tool_name}: executing...]")
                         elif part.tool_call_state == ToolCallState.COMPLETED:
-                            output = part.tool_state.output if part.tool_state and part.tool_state.compacted else part.content
-                            if part.tool_state and part.tool_state.compacted:
-                                output = "[Old tool result content cleared]"
+                            output = part.content
+                            if part.tool_state:
+                                if part.tool_state.compacted:
+                                    output = "[Old tool result content cleared]"
+                                    part.tool_state.attachments = []
+                                elif strip_media:
+                                    # When strip_media=true, clear attachments to reduce context size
+                                    part.tool_state.attachments = []
                             parts_content.append(f"[{part.tool_name}: {output}]")
                         elif part.tool_call_state == ToolCallState.FAILED:
                             error_msg = part.tool_call_error or "unknown error"
                             parts_content.append(f"[{part.tool_name} failed: {error_msg}]")
                     elif part.part_type == PartType.FILE.value:
                         if strip_media and part.media_mime_type and isMedia(part.media_mime_type):
-                            parts_content.append(f"[Attached {part.media_mime_type}: {part.content or 'file'}]")
+                            parts_content.append(f"[Attached {part.media_mime_type}: {part.filename or 'file'}]")
                         elif not strip_media:
                             files_result.append({
                                 "type": "file",
                                 "url": part.media_url,
-                                "mediaType": part.media_mime_type
+                                "mediaType": part.media_mime_type,
+                                "filename": part.filename
                             })
-                    elif part.part_type == PartType.IMAGE.value:
-                        if strip_media:
-                            parts_content.append(f"[Attached {part.media_mime_type or 'image'}: {part.content or 'image'}]")
-                        else:
-                            files_result.append({"type": "file", "url": part.media_url, "mediaType": part.media_mime_type})
-                    elif part.part_type == PartType.AUDIO.value:
-                        if strip_media:
-                            parts_content.append(f"[Attached {part.media_mime_type or 'audio'}: {part.content or 'audio'}]")
-                        else:
-                            files_result.append({"type": "file", "url": part.media_url, "mediaType": part.media_mime_type})
-                    elif part.part_type == PartType.VIDEO.value:
-                        if strip_media:
-                            parts_content.append(f"[Attached {part.media_mime_type or 'video'}: {part.content or 'video'}]")
-                        else:
-                            files_result.append({"type": "file", "url": part.media_url, "mediaType": part.media_mime_type})
-                    elif part.part_type == PartType.STREAMING.value:
-                        if part.is_streaming_done:
+                    elif part.part_type == PartType.TEXT.value and part.is_streaming_done:
                             parts_content.append(f"[Streaming: {part.streaming_content}]")
                     elif part.tool_name:
                         parts_content.append(f"[{part.tool_name}: {part.content}]")
@@ -833,9 +875,7 @@ class ConversationCompaction:
         compacted = 0
         for msg in self.messages:
             for part in msg.parts:
-                if part.part_type == PartType.STREAMING.value and part.streaming_content:
-                    if not part.is_streaming_done:
-                        continue
+                if part.streaming_content and part.is_streaming_done:
                     part_tokens = part.token_count or estimate(part.content)
                     part.content = ""
                     part.compacted = True
@@ -918,11 +958,22 @@ class ConversationCompaction:
         self._token_tracker.add_step(tokens, cost)
     
     def filter_compacted(self) -> List["MessageWithParts"]:
+        """
+        Filter messages.
+        - Skip compacted summary messages
+        - Replace compaction parts with "What did we do so far?"
+        - Stop at first user message that has compaction after an assistant summary
+        """
         result = []
-        for msg in self.messages:
-            if msg.is_summary:
-                continue
-            
+        completed_user_ids: set = set()
+
+        for msg in reversed(self.messages):
+            # Check if this is a user message that follows a completed summary
+            if msg.role == "user" and msg.message_id in completed_user_ids:
+                has_compaction = any(p.part_type == PartType.COMPACTION.value for p in msg.parts)
+                if has_compaction:
+                    break
+
             new_parts = []
             has_compaction = False
             for part in msg.parts:
@@ -935,12 +986,55 @@ class ConversationCompaction:
                     ))
                 elif not part.ignored:
                     new_parts.append(part)
-            
+
+            # If this is a summary assistant message with finish, mark parent as completed
+            if msg.role == "assistant" and msg.is_summary and msg.finish:
+                if hasattr(msg, 'message_id') and msg.message_id:
+                    completed_user_ids.add(msg.message_id)
+                new_parts = []
+                continue  # Skip summary messages
+
             if has_compaction:
                 msg.parts = new_parts
-            
+
             result.append(msg)
+
+        result.reverse()
         return result
+
+    def get_last_user_message(self) -> Optional["MessageWithParts"]:
+        """Get the last user message"""
+        for msg in reversed(self.messages):
+            if msg.role == "user":
+                return msg
+        return None
+
+    def get_last_assistant_message(self) -> Optional["MessageWithParts"]:
+        """Get the last assistant message"""
+        for msg in reversed(self.messages):
+            if msg.role == "assistant":
+                return msg
+        return None
+
+    def get_last_finished_assistant(self) -> Optional["MessageWithParts"]:
+        """Get the last finished assistant message"""
+        for msg in reversed(self.messages):
+            if msg.role == "assistant" and msg.finish:
+                return msg
+        return None
+
+    def get_pending_tasks(self) -> List[Dict[str, Any]]:
+        """Get pending compaction/subtask parts"""
+        tasks = []
+        for msg in self.messages:
+            if msg.role == "assistant" and msg.finish:
+                continue  # Don't collect tasks after finished assistant
+            for part in msg.parts:
+                if part.part_type == PartType.COMPACTION.value:
+                    tasks.append({"type": "compaction", "part": part})
+                elif part.part_type == PartType.SUBTASK.value:
+                    tasks.append({"type": "subtask", "part": part})
+        return tasks
     
     def process(self, llm_summarize: Callable[[str], str], abort_signal: Any = None, auto: bool = True) -> Dict[str, Any]:
         messages_for_summary = self.get_messages_for_llm(strip_media=True, include_reasoning=False)
@@ -1001,17 +1095,208 @@ class ConversationManager:
         self.compaction: ConversationCompaction = ConversationCompaction()
         self._history: List[ChatMessage] = []
         self._tool_call_handlers: Dict[str, Callable] = {}
-    
+        self._step: int = 0
+        self._abort: bool = False
+
     def add_user_message(self, content: str, message_id: str = None):
         self.compaction.add_message("user", content, message_id=message_id)
         self._history.append(ChatMessage(role="user", content=content))
-    
+
     def add_assistant_message(self, content: str, parts: List[MessagePart] = None, reasoning: str = None, message_id: str = None):
         self.compaction.add_message("assistant", content, parts, reasoning, message_id=message_id)
         self._history.append(ChatMessage(role="assistant", content=content))
-    
+
     def get_conversation_context(self) -> List[ChatMessage]:
-        return self._history[-20:] if len(self._history) > 20 else self._history
+        """
+        Get conversation context.
+        Uses filter_compacted to exclude compacted summaries and replace markers.
+        """
+        filtered = self.compaction.filter_compacted()
+        result = []
+        for msg in filtered:
+            if msg.is_summary:
+                continue
+            result.append(ChatMessage(role=msg.role, content=msg.content))
+        return result[-20:] if len(result) > 20 else result
+
+    async def run_loop(
+        self,
+        llm_summarize: Callable[[str], str],
+        llm_stream_generator: Callable,  # Callable that returns an async generator of StreamChunks
+        abort_signal: Any = None,
+        max_steps: int = 100,
+        structured_output_schema: Dict[str, Any] = None
+    ) -> Dict[str, Any]:
+        """
+        Run the conversation loop similar to OpenCode's loop() function.
+
+        This implements the full OpenCode loop architecture:
+        1. while(true) loop with step tracking
+        2. filter_compacted() to get messages
+        3. Find lastUser, lastAssistant, lastFinished, tasks
+        4. Check overflow and compact if needed
+        5. Process pending tasks (compaction, subtask)
+        6. SessionProcessor handles LLM stream internally
+        7. insertReminders for multi-turn conversations
+        8. structured_output for JSON schema mode
+
+        Returns control flow:
+        - "continue": Continue the loop
+        - "compact": Request compaction
+        - "stop": Stop the loop
+        """
+        stats = {"steps": 0, "compactions": 0, "pruned_tokens": 0}
+        structured_output_result = None
+        is_last_step = False
+
+        while self._step < max_steps:
+            self._step += 1
+            stats["steps"] = self._step
+            is_last_step = self._step >= max_steps
+
+            # Check abort signal
+            if abort_signal and getattr(abort_signal, "is_aborted", lambda: False)():
+                self._abort = True
+                break
+
+            msgs = self.compaction.filter_compacted()
+
+            if not msgs:
+                break
+
+            last_user = self.compaction.get_last_user_message()
+            last_assistant = self.compaction.get_last_assistant_message()
+            last_finished = self.compaction.get_last_finished_assistant()
+
+            if not last_user:
+                break  # No user message, exit
+
+            # Get pending tasks (compaction/subtask parts)
+            tasks = self.compaction.get_pending_tasks()
+
+            # Process pending tasks first
+            if tasks:
+                for task in tasks:
+                    if task["type"] == "compaction":
+                        if self.compaction.is_overflow(model_context_limit=self.max_tokens):
+                            result = self.compaction.process(llm_summarize, abort_signal=abort_signal, auto=True)
+                            stats["compactions"] += 1
+                            stats["summary_length"] = result.get("summary_length", 0)
+                            self._history = self._history[-10:] if len(self._history) > 10 else self._history
+                            continue  # After compaction, continue to next iteration
+                    elif task["type"] == "subtask":
+                        # Handle subtask
+                        # Subtasks represent sub-tasks that should be executed
+                        subtask_part = task["part"]
+                        if subtask_part.subtask_info:
+                            subtask_info = subtask_part.subtask_info
+                            prompt = subtask_info.get("prompt", "")
+                            description = subtask_info.get("description", "")
+                            agent = subtask_info.get("agent", "default")
+
+                            # Mark the subtask as completed with a placeholder result
+                            # In a full implementation, this would execute via an Agent system
+                            subtask_result = {
+                                "title": description or "Subtask completed",
+                                "description": description,
+                                "prompt": prompt,
+                                "agent": agent,
+                                "output": f"[Subtask '{description}' would be executed by agent '{agent}']",
+                                "status": "completed"
+                            }
+
+                            # Update the subtask part with the result
+                            subtask_part.tool_call_state = ToolCallState.COMPLETED
+                            subtask_part.content = json.dumps(subtask_result)
+                            subtask_part.is_streaming_done = True
+
+                            stats["subtasks_executed"] = stats.get("subtasks_executed", 0) + 1
+
+            # Check overflow
+            if last_finished and not last_finished.is_summary:
+                if self.compaction.is_overflow(model_context_limit=self.max_tokens):
+                    result = self.compaction.process(llm_summarize, abort_signal=abort_signal, auto=True)
+                    stats["compactions"] += 1
+                    stats["summary_length"] = result.get("summary_length", 0)
+                    self._history = self._history[-10:] if len(self._history) > 10 else self._history
+                    continue  # After compaction, continue to next iteration
+
+            # Check if we should exit the loop
+            # lastAssistant.finish && !["tool-calls", "unknown"].includes(lastAssistant.finish) && lastUser.id < lastAssistant.id
+            # The id comparison ensures we don't exit on the first turn
+            if last_assistant and last_assistant.finish:
+                finish = getattr(last_assistant, 'finish', None)
+                if finish and finish not in ["tool-calls", "unknown"]:
+                    # Use timestamp for comparison since message_id is string
+                    # Only exit if user message timestamp < assistant message timestamp (not first turn)
+                    if last_user.timestamp < last_assistant.timestamp:
+                        break  # Exit loop if assistant finished naturally
+
+            if self._step > 1 and last_finished:
+                self.compaction.insert_reminders(last_finished.message_id)
+
+            # Normal processing - use SessionProcessor internally
+            if llm_stream_generator:
+                # Get messages for LLM
+                messages_for_llm = self.compaction.get_messages_for_llm(strip_media=False, include_reasoning=True)
+
+                # Build system prompt
+                system_prompt = self.build_system_prompt(structured_output=structured_output_schema is not None)
+
+                # Resolve tools
+                tools = self.resolve_tools()
+
+                # Add structured output tool if schema is provided
+                if structured_output_schema:
+                    tools.append(self.create_structured_output_tool(structured_output_schema))
+
+                # Add max steps message if on last step
+                if is_last_step:
+                    # Append a message indicating max steps reached
+                    messages_for_llm.append({
+                        "role": "assistant",
+                        "content": MAX_STEPS_MESSAGE
+                    })
+
+                # Create SessionProcessor for internal stream handling
+                processor = SessionProcessor(
+                    compaction=self.compaction,
+                    model=settings.LLM_MODEL,
+                    abort_signal=abort_signal
+                )
+
+                # Get the stream generator
+                stream_gen = llm_stream_generator(
+                    messages=messages_for_llm,
+                    system=system_prompt,
+                    tools=tools,
+                    tool_choice="required" if structured_output_schema else "auto"
+                )
+
+                # Process stream internally
+                result = await processor.process_stream(stream_gen)
+
+                # Handle structured output result
+                if processor.structured_output is not None:
+                    # Structured output was captured, exit the loop
+                    stats["structured_output"] = processor.structured_output
+                    break
+
+                if result == "stop":
+                    break
+                elif result == "continue":
+                    continue
+                elif result == "compact":
+                    # Request compaction
+                    if self.compaction.is_overflow(model_context_limit=self.max_tokens):
+                        prune_result = self.compaction.prune()
+                        stats["pruned_tokens"] += prune_result
+                        if self.compaction.is_overflow(model_context_limit=self.max_tokens):
+                            compact_result = self.compaction.process(llm_summarize, abort_signal=abort_signal, auto=True)
+                            stats["compactions"] += 1
+                            self._history = self._history[-10:] if len(self._history) > 10 else self._history
+
+        return stats
     
     def check_and_compact(self, llm_summarize: Callable[[str], str], abort_signal: Any = None) -> Dict[str, Any]:
         stats = self.compaction.get_stats()
@@ -1034,7 +1319,123 @@ class ConversationManager:
             self._history = self._history[-10:] if len(self._history) > 10 else self._history
         
         return stats
-    
+
+    def resolve_tools(self, tools_config: Dict[str, bool] = None) -> List[Dict[str, Any]]:
+        """
+        Resolve tools for AI SDK format
+
+        Builds a list of tools in OpenAI function calling format.
+        Filters tools based on tools_config if provided.
+
+        Returns:
+            List of tools in OpenAI function calling format
+        """
+        from mcp_client.client import mcp_client
+        from skills.manager import skill_manager
+
+        tools = []
+
+        # Add skill tool
+        skills = skill_manager.get_all_skills()
+        if skills:
+            skill_names = [s.name for s in skills]
+            skill_hint = f"可用技能: {', '.join(skill_names)}" if skill_names else "无可用技能"
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "skill",
+                    "description": "加载技能。当没有可用的技能时不要调用此工具。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": skill_hint
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                }
+            })
+
+        # Add MCP tools
+        for tc in mcp_client.all_tools:
+            # Filter by tools_config if provided
+            if tools_config and tools_config.get(tc.name) is False:
+                continue
+
+            tool_name = f"{tc.server}_{tc.name}" if tc.server else tc.name
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "description": f"{tc.server}: {tc.description}" if tc.server else tc.description,
+                    "parameters": tc.input_schema
+                }
+            })
+
+        return tools
+
+    def create_structured_output_tool(self, schema: Dict[str, Any], on_success: Callable = None) -> Dict[str, Any]:
+        """
+        Create a structured output tool for JSON schema mode, similar to OpenCode's createStructuredOutputTool.
+
+        Args:
+            schema: JSON schema for the output
+            on_success: Callback when tool is called successfully
+
+        Returns:
+            Tool definition in OpenAI format
+        """
+        return {
+            "type": "function",
+            "function": {
+                "name": "StructuredOutput",
+                "description": STRUCTURED_OUTPUT_DESCRIPTION,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "output": {
+                            "type": "string",
+                            "description": "The structured output in JSON format matching the requested schema"
+                        }
+                    },
+                    "required": ["output"]
+                }
+            }
+        }
+
+    def build_system_prompt(self, structured_output: bool = False) -> str:
+        """
+        Build the system prompt
+
+        Args:
+            structured_output: Whether to add structured output instructions
+
+        Returns:
+            System prompt string
+        """
+        base_system = """你是一个智能助手。
+
+你有两种扩展能力:
+1. **MCP工具** - 来自外部MCP服务器的功能调用
+2. **自定义Skills** - 你可以使用的专业技能
+
+当需要使用某个技能时,使用 skill 工具加载该技能。"""
+
+        from skills.manager import skill_manager
+        skills_message = skill_manager.build_skills_system_message(compact=False)
+
+        if skills_message:
+            system = f"{base_system}\n\n<available_skills>\n{skills_message}\n</available_skills>"
+        else:
+            system = base_system
+
+        if structured_output:
+            system = f"{system}\n\n{STRUCTURED_OUTPUT_SYSTEM_PROMPT}"
+
+        return system
+
     def _build_summary_prompt(self) -> str:
         recent_msgs = self.get_conversation_context()
         if not recent_msgs:
@@ -1099,6 +1500,252 @@ class ConversationManager:
         
         stats["final_tokens"] = self.compaction.get_total_tokens_with_reasoning()
         return stats
+
+
+class SessionProcessor:
+    """
+    Internal LLM processor similar to OpenCode's SessionProcessor.
+
+    Handles all stream events internally and returns control flow values:
+    - "continue": Continue the loop
+    - "compact": Request compaction
+    - "stop": Stop the loop
+    """
+
+    def __init__(
+        self,
+        compaction: "ConversationCompaction",
+        model: str = None,
+        abort_signal: Any = None
+    ):
+        self.compaction = compaction
+        self.model = model or settings.LLM_MODEL
+        self.abort_signal = abort_signal
+        self.toolcalls: Dict[str, MessagePart] = {}
+        self.snapshot: Optional[Snapshot] = None
+        self.blocked = False
+        self.needs_compaction = False
+        self._message_id: Optional[str] = None
+        self._reasoning_parts: Dict[str, MessagePart] = {}
+        self.structured_output: Optional[Dict[str, Any]] = None  # Captured structured output result
+
+    async def process_stream(self, stream_async_generator) -> str:
+        """
+        Process LLM stream internally
+
+        Handles:
+        - text-start/delta/end
+        - reasoning-start/delta/end
+        - tool-call/input-start/input-delta/input-end
+        - tool-result
+        - start-step/finish-step
+        - error
+        - done
+
+        Returns:
+        - "continue": Normal completion, continue loop
+        - "compact": Needs compaction
+        - "stop": Should stop
+        """
+        self.needs_compaction = False
+
+        async for chunk in stream_async_generator:
+            # Check abort
+            if self.abort_signal and getattr(self.abort_signal, "is_aborted", lambda: False)():
+                break
+
+            if chunk.chunk_type == "text-start":
+                msg_id = self.compaction.start_streaming_message("assistant")
+                self._message_id = msg_id
+                text_part = MessagePart(
+                    part_type=PartType.TEXT.value,
+                    content="",
+                    token_count=0
+                )
+                for msg in self.compaction.messages:
+                    if msg.message_id == msg_id:
+                        msg.parts.append(text_part)
+                        break
+
+            elif chunk.chunk_type == "text-delta":
+                delta = chunk.delta or chunk.content
+                if delta:
+                    for msg in self.compaction.messages:
+                        if msg.message_id == self._message_id:
+                            msg.content += delta
+                            for part in msg.parts:
+                                if part.part_type == PartType.TEXT.value:
+                                    part.content += delta
+                                    part.token_count = estimate(part.content)
+                            break
+                self.compaction._update_total_tokens()
+
+            elif chunk.chunk_type == "text-end":
+                for msg in self.compaction.messages:
+                    if msg.message_id == self._message_id:
+                        for part in msg.parts:
+                            if part.part_type == PartType.TEXT.value:
+                                part.is_streaming_done = True
+                                break
+                        break
+
+            elif chunk.chunk_type == "reasoning-start":
+                reasoning_part = MessagePart(
+                    part_type=PartType.REASONING.value,
+                    content="",
+                    reasoning_content="",
+                    token_count=0
+                )
+                self._reasoning_parts[chunk.tool_call_id or "default"] = reasoning_part
+                if self._message_id:
+                    for msg in self.compaction.messages:
+                        if msg.message_id == self._message_id:
+                            msg.parts.append(reasoning_part)
+                            msg.reasoning = ""
+                            break
+
+            elif chunk.chunk_type == "reasoning-delta":
+                delta = chunk.delta or chunk.content
+                if delta:
+                    for msg in self.compaction.messages:
+                        if msg.message_id == self._message_id:
+                            if msg.reasoning is None:
+                                msg.reasoning = ""
+                            msg.reasoning += delta
+                            self.compaction.reasoning_tokens += estimate(delta)
+                            break
+                    for rid, part in self._reasoning_parts.items():
+                        if part.content is not None:
+                            part.content += delta
+                            part.reasoning_content = part.content
+                            part.token_count = estimate(part.content)
+                self.compaction._update_total_tokens()
+
+            elif chunk.chunk_type == "reasoning-end":
+                for msg in self.compaction.messages:
+                    if msg.message_id == self._message_id:
+                        for part in msg.parts:
+                            if part.part_type == PartType.REASONING.value:
+                                part.is_streaming_done = True
+                                break
+                        break
+                self._reasoning_parts.clear()
+
+            elif chunk.chunk_type == "tool-call":
+                tool_part = MessagePart(
+                    part_type=PartType.TOOL.value,
+                    content=chunk.tool_input or "",
+                    tool_name=chunk.tool_name,
+                    tool_call_id=chunk.tool_call_id,
+                    tool_call_state=ToolCallState.EXECUTING,
+                    token_count=estimate(chunk.tool_input or "")
+                )
+                self.toolcalls[chunk.tool_call_id] = tool_part
+                if self._message_id:
+                    for msg in self.compaction.messages:
+                        if msg.message_id == self._message_id:
+                            msg.parts.append(tool_part)
+                            msg.tool_calls[chunk.tool_call_id] = tool_part
+                            msg.pending_tool_count += 1
+                            break
+
+            elif chunk.chunk_type == "tool-result":
+                if self._message_id and chunk.tool_call_id in self.toolcalls:
+                    tool_part = self.toolcalls[chunk.tool_call_id]
+                    tool_part.content = chunk.tool_output or chunk.content
+                    tool_part.tool_call_state = ToolCallState.COMPLETED
+                    tool_part.token_count = estimate(tool_part.content)
+                    if tool_part.tool_state:
+                        tool_part.tool_state.status = ToolCallState.COMPLETED
+                        tool_part.tool_state.output = tool_part.content
+                        tool_part.tool_state.updated = time.time()
+                        if chunk.attachments:
+                            tool_part.tool_state.attachments = chunk.attachments
+                    for msg in self.compaction.messages:
+                        if msg.message_id == self._message_id:
+                            msg.completed_tool_count += 1
+                            msg.pending_tool_count = max(0, msg.pending_tool_count - 1)
+                            break
+
+                    # Capture structured output result
+                    if tool_part.tool_name == "StructuredOutput" and chunk.tool_output:
+                        try:
+                            self.structured_output = json.loads(chunk.tool_output)
+                        except json.JSONDecodeError:
+                            self.structured_output = {"output": chunk.tool_output}
+
+                    del self.toolcalls[chunk.tool_call_id]
+                self.compaction._update_total_tokens()
+
+            elif chunk.chunk_type == "start-step":
+                if self._message_id:
+                    snapshot_part = MessagePart(
+                        part_type=PartType.STEP_START.value,
+                        content="",
+                        snapshot_data=chunk.snapshot_data or {}
+                    )
+                    for msg in self.compaction.messages:
+                        if msg.message_id == self._message_id:
+                            msg.parts.append(snapshot_part)
+                            break
+
+            elif chunk.chunk_type == "finish-step":
+                if self._message_id:
+                    step_finish_part = MessagePart(
+                        part_type=PartType.STEP_FINISH.value,
+                        content="",
+                        step_tokens=chunk.usage.get("total") if chunk.usage else None,
+                        step_cost=chunk.cost
+                    )
+                    for msg in self.compaction.messages:
+                        if msg.message_id == self._message_id:
+                            msg.parts.append(step_finish_part)
+                            break
+                    if chunk.usage:
+                        usage = TokenUsage.from_dict(chunk.usage)
+                        self.compaction._token_tracker.add_usage(usage)
+                        if chunk.usage.get("total"):
+                            self.compaction.add_step_tokens(chunk.usage.get("total"), chunk.cost or 0)
+                    # Check overflow after step
+                    if self.compaction.is_overflow(model_context_limit=settings.CONVERSATION_MAX_TOKENS):
+                        self.needs_compaction = True
+
+            elif chunk.chunk_type == "error":
+                # Error handling - mark failed tool calls
+                if self._message_id and chunk.tool_call_id in self.toolcalls:
+                    tool_part = self.toolcalls[chunk.tool_call_id]
+                    tool_part.tool_call_state = ToolCallState.FAILED
+                    tool_part.tool_call_error = chunk.content
+                    if tool_part.tool_state:
+                        tool_part.tool_state.status = ToolCallState.FAILED
+                        tool_part.tool_state.updated = time.time()
+                    del self.toolcalls[chunk.tool_call_id]
+
+            elif chunk.chunk_type == "done":
+                # Finalize the message
+                if self._message_id:
+                    self.compaction.finalize_streaming_message(self._message_id)
+                # Mark remaining tool calls as failed
+                for tool_id, tool_part in list(self.toolcalls.items()):
+                    tool_part.tool_call_state = ToolCallState.FAILED
+                    tool_part.tool_call_error = "Tool execution aborted"
+                self.toolcalls.clear()
+
+            if self.needs_compaction:
+                break
+
+        # Handle cleanup
+        for tool_id, tool_part in list(self.toolcalls.items()):
+            tool_part.tool_call_state = ToolCallState.FAILED
+            tool_part.tool_call_error = "Tool execution aborted"
+        self.toolcalls.clear()
+
+        # Return control flow value
+        if self.needs_compaction:
+            return "compact"
+        if self.blocked:
+            return "stop"
+        return "continue"
 
 
 conversation_manager = ConversationManager()
