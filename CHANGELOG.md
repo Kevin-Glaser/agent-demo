@@ -8,6 +8,15 @@ All notable changes to this project will be documented in this file.
 - MINOR: New features (backward compatible)
 - PATCH: Bug fixes
 
+## [1.2.0] - 2026-04-01
+
+### Added
+
+#### Streaming Response
+- **SSE Streaming**: `/api/chat/stream` and `/api/chat/loop` endpoints with SSE support
+- **SSE Chunk Types**: text-delta, reasoning-delta, tool-call, tool-result, done, error
+- **Real-time Display**: Incremental text streaming with stop button and tool call display
+
 ## [1.1.0] - 2026-04-01
 
 ### Added

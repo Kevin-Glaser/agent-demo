@@ -545,10 +545,13 @@ class OpenAIService:
                 **kwargs
             )
 
+        full_messages = [{"role": "system", "content": system}] if system else []
+        full_messages.extend(messages)
+
         kwargs = {
             "model": settings.LLM_MODEL,
             "temperature": settings.TEMPERATURE,
-            "messages": messages,
+            "messages": full_messages,
             "stream": True
         }
 
@@ -556,7 +559,12 @@ class OpenAIService:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
 
+        yield build_chunk("start-step")
+
         reasoning_content = ""
+        text_content = ""
+        has_reasoning_started = False
+        has_text_started = False
         tool_calls_buffer: Dict[int, Dict[str, Any]] = {}
 
         stream = await self.client.chat.completions.create(**kwargs)
@@ -570,14 +578,19 @@ class OpenAIService:
 
             # Handle reasoning
             if hasattr(delta, 'reasoning') and delta.reasoning:
-                if not reasoning_content:
-                    yield build_chunk("reasoning-start", reasoning_content)
+                if not has_reasoning_started:
+                    yield build_chunk("reasoning-start", "")
+                    has_reasoning_started = True
                 reasoning_content += delta.reasoning
                 yield build_chunk("reasoning-delta", delta.reasoning, delta=delta.reasoning)
                 continue
 
             # Handle content
             if hasattr(delta, 'content') and delta.content:
+                if not has_text_started:
+                    yield build_chunk("text-start", "")
+                    has_text_started = True
+                text_content += delta.content
                 yield build_chunk("text-delta", delta.content, delta=delta.content)
 
             # Handle tool calls
@@ -608,27 +621,54 @@ class OpenAIService:
                             tool_input=tool_calls_buffer[index]["arguments"]
                         )
 
+        # Finalize text
+        if has_text_started:
+            yield build_chunk("text-end", text_content)
+
         # Finalize reasoning
-        if reasoning_content:
+        if has_reasoning_started:
             yield build_chunk("reasoning-end", reasoning_content)
 
         # Handle tool results if any tool calls were made
+        tool_results = []
         if tool_calls_buffer:
             for idx in sorted(tool_calls_buffer.keys()):
                 tc_data = tool_calls_buffer[idx]
                 if tc_data["id"] and tc_data["name"]:
-                    # Execute tool and yield result
                     result = await self.tool_executor.execute_tool_call_by_data(
                         tool_call_id=tc_data["id"],
                         tool_name=tc_data["name"],
                         arguments=tc_data["arguments"]
                     )
+                    tool_results.append((tc_data, result))
                     yield build_chunk(
                         "tool-result",
                         result.result or result.error or "",
                         tool_call_id=tc_data["id"],
                         tool_name=tc_data["name"]
                     )
+
+        # Get usage info from the last chunk if available
+        usage = None
+        if hasattr(chunk, 'usage') and chunk.usage:
+            usage = {
+                "input_tokens": chunk.usage.prompt_tokens,
+                "output_tokens": chunk.usage.completion_tokens,
+                "total_tokens": chunk.usage.total_tokens
+            }
+
+        # Calculate cost (rough estimate)
+        cost = None
+        if usage:
+            # Approximate cost: $0.001/1K input + $0.003/1K output
+            cost = (usage["input_tokens"] * 0.000001) + (usage["output_tokens"] * 0.000003)
+
+        yield build_chunk(
+            "finish-step",
+            "",
+            usage=usage,
+            cost=cost
+        )
 
         yield build_chunk("done", "")
 
@@ -690,7 +730,7 @@ class OpenAIService:
             self.conversation_manager.add_user_message(req.message)
 
             # Create the LLM stream generator factory
-            async def llm_stream_generator(messages: List[Dict], system: str, tools: List[Dict], tool_choice: str = "auto"):
+            def llm_stream_generator(messages: List[Dict], system: str, tools: List[Dict], tool_choice: str = "auto"):
                 return self._create_llm_stream(messages, system, tools, tool_choice)
 
             # Run the loop

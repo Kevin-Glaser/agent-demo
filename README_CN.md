@@ -144,7 +144,7 @@ SKILLS_MAX_PROMPT_CHARS=8000        # 最大字符数
 - 多轮对话
 - 工具调用结果展示
 - 加载状态
-![alt text](image.png)
+![chat interface](Display.gif)
 
 ### 2. MCP 工具管理
 

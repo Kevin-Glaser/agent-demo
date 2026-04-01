@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, Loader2, CheckCircle2, XCircle } from 'lucide-react';
 import type { ChatMessage, CallToolResult } from '@/types';
-import { chat } from '@/api';
+import { chatStream, parseSSEStream } from '@/api';
 
 interface ChatProps {
   initialMessage?: string;
@@ -13,8 +13,10 @@ export function Chat({ initialMessage }: ChatProps) {
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [streamingContent, setStreamingContent] = useState('');
   const [toolResults, setToolResults] = useState<CallToolResult[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -22,7 +24,105 @@ export function Chat({ initialMessage }: ChatProps) {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, toolResults]);
+  }, [messages, streamingContent, toolResults]);
+
+  // Handle streaming chat
+  const handleStreamingSubmit = async (userMessage: string) => {
+    // Abort any existing stream
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+
+    const history = messages.map(m => ({ role: m.role, content: m.content }));
+    setStreamingContent('');
+    setToolResults([]);
+
+    try {
+      const response = await chatStream({ message: userMessage, history });
+
+      // Add placeholder message that will be updated
+      setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+
+      let fullContent = '';
+      const toolCallsMap = new Map<string, CallToolResult>();
+
+      for await (const chunk of parseSSEStream(response)) {
+        if (abortControllerRef.current?.signal.aborted) break;
+
+        switch (chunk.chunk_type) {
+          case 'text-delta':
+            if (chunk.delta) {
+              fullContent += chunk.delta;
+              setStreamingContent(fullContent);
+              // Update the last message with streaming content
+              setMessages(prev => {
+                const updated = [...prev];
+                if (updated.length > 0 && updated[updated.length - 1].role === 'assistant') {
+                  updated[updated.length - 1] = { ...updated[updated.length - 1], content: fullContent };
+                }
+                return updated;
+              });
+            }
+            break;
+
+          case 'reasoning-delta':
+            // Could display reasoning separately if needed
+            break;
+
+          case 'tool-call':
+            if (chunk.tool_call_id && chunk.tool_name) {
+              toolCallsMap.set(chunk.tool_call_id, {
+                name: chunk.tool_name,
+                result: null,
+                error: null,
+                call_tool_id: chunk.tool_call_id,
+              });
+            }
+            break;
+
+          case 'tool-result':
+            if (chunk.tool_call_id) {
+              const existing = toolCallsMap.get(chunk.tool_call_id);
+              if (existing) {
+                existing.result = chunk.content;
+              }
+            }
+            break;
+
+          case 'done':
+            // Stream completed
+            break;
+
+          case 'error':
+            if (chunk.content) {
+              fullContent += `\n[错误: ${chunk.content}]`;
+              setMessages(prev => {
+                const updated = [...prev];
+                if (updated.length > 0 && updated[updated.length - 1].role === 'assistant') {
+                  updated[updated.length - 1] = { ...updated[updated.length - 1], content: fullContent };
+                }
+                return updated;
+              });
+            }
+            break;
+        }
+      }
+
+      // Update tool results
+      if (toolCallsMap.size > 0) {
+        setToolResults(Array.from(toolCallsMap.values()));
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name !== 'AbortError') {
+        setMessages(prev => [...prev, { role: 'assistant', content: '抱歉，发生错误，请稍后重试。' }]);
+      }
+    } finally {
+      setStreamingContent('');
+      abortControllerRef.current = null;
+      setLoading(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,22 +131,18 @@ export function Chat({ initialMessage }: ChatProps) {
     const userMessage = input.trim();
     setInput('');
     setLoading(true);
-    setToolResults([]);
 
     setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
 
-    const history = messages.map(m => ({ role: m.role, content: m.content }));
+    // Use streaming by default
+    await handleStreamingSubmit(userMessage);
+  };
 
-    try {
-      const response = await chat({ message: userMessage, history });
-      setMessages(prev => [...prev, { role: 'assistant', content: response.response || '' }]);
-      if (response.callTools && response.callTools.length > 0) {
-        setToolResults(response.callTools);
-      }
-    } catch {
-      setMessages(prev => [...prev, { role: 'assistant', content: '抱歉，发生错误，请稍后重试。' }]);
-    } finally {
+  const handleStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
       setLoading(false);
+      setStreamingContent('');
     }
   };
 
@@ -68,6 +164,9 @@ export function Chat({ initialMessage }: ChatProps) {
               }`}
             >
               <p className="whitespace-pre-wrap">{message.content}</p>
+              {index === messages.length - 1 && streamingContent && message.role === 'assistant' && (
+                <span className="animate-pulse">▊</span>
+              )}
             </div>
             {message.role === 'user' && (
               <div className="flex-shrink-0 w-8 h-8 rounded-full bg-[hsl(var(--secondary))] flex items-center justify-center">
@@ -77,7 +176,7 @@ export function Chat({ initialMessage }: ChatProps) {
           </div>
         ))}
 
-        {loading && (
+        {loading && !streamingContent && (
           <div className="flex gap-3 justify-start">
             <div className="flex-shrink-0 w-8 h-8 rounded-full bg-[hsl(var(--primary))] flex items-center justify-center">
               <Bot className="w-5 h-5 text-[hsl(var(--primary-foreground))]" />
@@ -123,13 +222,23 @@ export function Chat({ initialMessage }: ChatProps) {
             className="flex-1 bg-[hsl(var(--input))] border border-[hsl(var(--border))] rounded-full px-4 py-3 text-[hsl(var(--foreground))] placeholder-[hsl(var(--muted-foreground))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]"
             disabled={loading}
           />
-          <button
-            type="submit"
-            disabled={loading || !input.trim()}
-            className="bg-[hsl(var(--primary))] hover:bg-[hsl(var(--primary))]/90 disabled:opacity-50 disabled:cursor-not-allowed text-[hsl(var(--primary-foreground))] rounded-full p-3 transition-colors"
-          >
-            <Send className="w-5 h-5" />
-          </button>
+          {loading && streamingContent ? (
+            <button
+              type="button"
+              onClick={handleStop}
+              className="bg-[hsl(var(--destructive))] hover:bg-[hsl(var(--destructive))]/90 text-[hsl(var(--destructive-foreground))] rounded-full p-3 transition-colors"
+            >
+              <XCircle className="w-5 h-5" />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={loading || !input.trim()}
+              className="bg-[hsl(var(--primary))] hover:bg-[hsl(var(--primary))]/90 disabled:opacity-50 disabled:cursor-not-allowed text-[hsl(var(--primary-foreground))] rounded-full p-3 transition-colors"
+            >
+              <Send className="w-5 h-5" />
+            </button>
+          )}
         </div>
       </form>
     </div>

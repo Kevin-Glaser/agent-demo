@@ -604,7 +604,7 @@ class ConversationCompaction:
                 continue
 
             # Skip if this user message is before or equal to lastFinished
-            if last_finished_id and msg.message_id <= last_finished_id:
+            if last_finished_id and msg.message_id and msg.message_id <= last_finished_id:
                 continue
 
             # Find text parts that are not ignored and not synthetic
@@ -1722,9 +1722,30 @@ class SessionProcessor:
                     del self.toolcalls[chunk.tool_call_id]
 
             elif chunk.chunk_type == "done":
-                # Finalize the message
-                if self._message_id:
-                    self.compaction.finalize_streaming_message(self._message_id)
+                # Finalize the message - create one if _message_id is None (no text content was streamed)
+                if self._message_id is None:
+                    # Create an assistant message if none exists
+                    msg_id = self.compaction.start_streaming_message("assistant")
+                    self._message_id = msg_id
+                    # Create text part
+                    text_part = MessagePart(
+                        part_type=PartType.TEXT.value,
+                        content="",
+                        token_count=0
+                    )
+                    for msg in self.compaction.messages:
+                        if msg.message_id == msg_id:
+                            msg.parts.append(text_part)
+                            break
+
+                message_id = self._message_id
+                if message_id:
+                    for msg in self.compaction.messages:
+                        if msg.message_id == message_id:
+                            msg.finish = "stop"
+                            break
+                    self.compaction.finalize_streaming_message(message_id)
+
                 # Mark remaining tool calls as failed
                 for tool_id, tool_part in list(self.toolcalls.items()):
                     tool_part.tool_call_state = ToolCallState.FAILED

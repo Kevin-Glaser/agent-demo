@@ -142,7 +142,7 @@ Modern dark-themed chat interface with:
 - Multi-turn conversation support
 - Automatic tool calling display
 - Loading states
-![alt text](image-1.png)
+![chat interface](Display.gif)
 
 ### 2. MCP Tool Management
 
