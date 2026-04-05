@@ -11,6 +11,11 @@ from models.chat import ChatRequest, ChatResponse, CallToolResult
 from mcp_client.client import mcp_client
 from skills.manager import skill_manager
 from session.compaction import ConversationManager, MessagePart, PartType, StreamChunk
+from session.reasoning import (
+    ReasoningType, ReasoningEffort, ReasoningItem,
+    get_model_reasoning_capability, is_reasoning_model,
+    resolve_effort
+)
 
 
 class MessageBuilder:
@@ -170,8 +175,7 @@ class OpenAIService:
         self.conversation_manager = ConversationManager()
     
     def _is_reasoning_model(self) -> bool:
-        model = settings.LLM_MODEL.lower()
-        return "r1" in model or "o1" in model or "o3" in model
+        return is_reasoning_model(settings.LLM_MODEL)
     
     def _build_skill_tool_description(self) -> str:
         skills = skill_manager.get_all_skills()
@@ -229,14 +233,28 @@ class OpenAIService:
         history = self.conversation_manager.get_conversation_context()
         return [{"role": m.role, "content": m.content} for m in history]
     
-    def _extract_reasoning(self, message) -> Optional[str]:
+    def _extract_reasoning(self, message, reasoning_item: Optional[ReasoningItem] = None) -> Optional[str]:
+        """Extract reasoning from message and optionally populate ReasoningItem."""
+        reasoning = None
+
         if hasattr(message, 'reasoning') and message.reasoning:
-            return message.reasoning
-        if hasattr(message, 'completion_reasoning'):
-            return message.completion_reasoning
-        if hasattr(message, 'opaque') and hasattr(message.opaque, 'reasoning'):
-            return message.opaque.reasoning
-        return None
+            reasoning = message.reasoning
+        elif hasattr(message, 'completion_reasoning'):
+            reasoning = message.completion_reasoning
+        elif hasattr(message, 'opaque') and hasattr(message.opaque, 'reasoning'):
+            reasoning = message.opaque.reasoning
+
+        if reasoning and reasoning_item is not None:
+            capability = get_model_reasoning_capability(settings.LLM_MODEL)
+            if capability and capability.reasoning_type == ReasoningType.RAW:
+                reasoning_item.raw_content = reasoning
+            elif capability and capability.reasoning_type == ReasoningType.SUMMARY:
+                reasoning_item.summary_text = reasoning
+            else:
+                # Default to raw for unknown patterns
+                reasoning_item.raw_content = reasoning
+
+        return reasoning
     
     async def _generate_summary(self, summary_prompt: str) -> str:
         try:
@@ -273,8 +291,9 @@ class OpenAIService:
             
             response: ChatCompletion = await self.client.chat.completions.create(**kwargs)
             message = response.choices[0].message
-            
-            reasoning = self._extract_reasoning(message) if self._is_reasoning_model() else None
+
+            reasoning_item = ReasoningItem() if self._is_reasoning_model() else None
+            reasoning = self._extract_reasoning(message, reasoning_item) if reasoning_item else None
             tool_parts: List[MessagePart] = []
             
             if not hasattr(message, 'tool_calls') or not message.tool_calls:
