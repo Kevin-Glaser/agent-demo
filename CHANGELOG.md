@@ -8,6 +8,14 @@ All notable changes to this project will be documented in this file.
 - MINOR: New features (backward compatible)
 - PATCH: Bug fixes
 
+## [1.3.0] - 2026-04-05
+
+### Added
+- Reasoning effort levels with validation and fallback support
+- Reasoning type distinction (SUMMARY/RAW/INTERLEAVED) for different model architectures
+- InterleavedReasoningParser supporting `<reasoning>`, `<think>`, `{{reasoning}}` formats
+- MODEL_REGISTRY for unified model capability management
+
 ## [1.2.0] - 2026-04-01
 
 ### Added
