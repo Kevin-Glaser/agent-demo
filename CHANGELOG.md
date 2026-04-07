@@ -8,13 +8,15 @@ All notable changes to this project will be documented in this file.
 - MINOR: New features (backward compatible)
 - PATCH: Bug fixes
 
-## [1.3.0] - 2026-04-05
+## [1.3.0] - 2026-04-07
 
 ### Added
-- Reasoning effort levels with validation and fallback support
-- Reasoning type distinction (SUMMARY/RAW/INTERLEAVED) for different model architectures
-- InterleavedReasoningParser supporting `<reasoning>`, `<think>`, `{{reasoning}}` formats
-- MODEL_REGISTRY for unified model capability management
+
+#### Reasoning Model Detection
+- **Config-driven Detection**: `REASONING_MODELS` setting for explicit model list
+- **Fallback Pattern Matching**: `REASONING_MODEL_PATTERNS` setting (default: "r1,o1,o3")
+- **Extensible Fields**: `_extract_reasoning()` now checks multiple provider fields (reasoning, completion_reasoning, thinking, thought_process, opaque.reasoning)
+- **Nested Attribute Support**: `_get_nested_reasoning()` handles dot-notation paths
 
 ## [1.2.0] - 2026-04-01
 

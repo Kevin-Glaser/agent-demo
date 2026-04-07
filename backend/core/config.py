@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     CONVERSATION_RESERVED_TOKENS: int = 20000
     CONVERSATION_PRUNE_PROTECT: int = 40000
     CONVERSATION_AUTO_COMPACT: bool = True
+
+    # Reasoning model detection
+    REASONING_MODELS: str = ""  # Comma-separated list of model names that support reasoning (e.g., "deepseek-r1,o1,o3")
+    REASONING_MODEL_PATTERNS: str = "r1,o1,o3"  # Fallback string patterns to detect reasoning models
     
     class Config:
         env_file = ".env"

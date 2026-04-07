@@ -175,7 +175,22 @@ class OpenAIService:
         self.conversation_manager = ConversationManager()
     
     def _is_reasoning_model(self) -> bool:
-        return is_reasoning_model(settings.LLM_MODEL)
+        model = settings.LLM_MODEL.lower()
+
+        # 1. Configuration-driven detection (priority)
+        if settings.REASONING_MODELS:
+            configured_models = [m.strip().lower() for m in settings.REASONING_MODELS.split(",") if m.strip()]
+            if model in configured_models:
+                return True
+
+        # 2. String pattern matching as fallback
+        fallback_patterns = settings.REASONING_MODEL_PATTERNS.split(",")
+        for pattern in fallback_patterns:
+            pattern = pattern.strip().lower()
+            if pattern and pattern in model:
+                return True
+
+        return False
     
     def _build_skill_tool_description(self) -> str:
         skills = skill_manager.get_all_skills()
@@ -233,28 +248,38 @@ class OpenAIService:
         history = self.conversation_manager.get_conversation_context()
         return [{"role": m.role, "content": m.content} for m in history]
     
-    def _extract_reasoning(self, message, reasoning_item: Optional[ReasoningItem] = None) -> Optional[str]:
-        """Extract reasoning from message and optionally populate ReasoningItem."""
-        reasoning = None
+    def _extract_reasoning(self, message) -> Optional[str]:
+        # Possible field names for reasoning content from different providers
+        reasoning_fields = [
+            'reasoning',
+            'completion_reasoning',
+            'thinking',
+            'thought_process',
+            'opaque.reasoning',
+        ]
 
-        if hasattr(message, 'reasoning') and message.reasoning:
-            reasoning = message.reasoning
-        elif hasattr(message, 'completion_reasoning'):
-            reasoning = message.completion_reasoning
-        elif hasattr(message, 'opaque') and hasattr(message.opaque, 'reasoning'):
-            reasoning = message.opaque.reasoning
+        for field in reasoning_fields:
+            value = self._get_nested_reasoning(message, field)
+            if value:
+                return value
+        return None
 
-        if reasoning and reasoning_item is not None:
-            capability = get_model_reasoning_capability(settings.LLM_MODEL)
-            if capability and capability.reasoning_type == ReasoningType.RAW:
-                reasoning_item.raw_content = reasoning
-            elif capability and capability.reasoning_type == ReasoningType.SUMMARY:
-                reasoning_item.summary_text = reasoning
-            else:
-                # Default to raw for unknown patterns
-                reasoning_item.raw_content = reasoning
-
-        return reasoning
+    def _get_nested_reasoning(self, obj, field: str) -> Optional[str]:
+        """Get nested attribute using dot notation (e.g., 'opaque.reasoning')."""
+        if '.' in field:
+            parts = field.split('.')
+            current = obj
+            for part in parts:
+                if hasattr(current, part):
+                    current = getattr(current, part)
+                else:
+                    return None
+            return current if isinstance(current, str) else None
+        else:
+            if hasattr(obj, field):
+                value = getattr(obj, field)
+                return value if isinstance(value, str) else None
+        return None
     
     async def _generate_summary(self, summary_prompt: str) -> str:
         try:
