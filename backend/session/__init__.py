@@ -8,6 +8,7 @@ from session.compaction import (
     COMPACTION_BUFFER,
     PRUNE_MINIMUM,
     PROTECTED_TOOLS,
+    is_contextual_message,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "COMPACTION_BUFFER",
     "PRUNE_MINIMUM",
     "PROTECTED_TOOLS",
+    "is_contextual_message",
 ]

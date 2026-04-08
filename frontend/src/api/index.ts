@@ -129,3 +129,41 @@ export async function callTool(server: string, name: string, args: Record<string
   if (!response.ok) throw new Error('Failed to call tool');
   return response.json();
 }
+
+export interface RollbackResult {
+  rolled_back: number;
+  messages_removed: number;
+  tokens_removed: number;
+  remaining_messages: number;
+}
+
+export async function rollback(n_turns: number = 1, messageIndex?: number): Promise<RollbackResult> {
+  const body: { n_turns: number; message_index?: number } = { n_turns };
+  if (messageIndex !== undefined) {
+    body.message_index = messageIndex;
+  }
+  const response = await fetch(`${API_BASE}/chat/rollback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error('Rollback request failed');
+  return response.json();
+}
+
+export interface DeleteTurnResult {
+  removed: number;
+  tokens_removed: number;
+  remaining_messages: number;
+}
+
+export async function deleteTurn(messageIndex: number): Promise<DeleteTurnResult> {
+  const response = await fetch(`${API_BASE}/chat/delete-turn`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message_index: messageIndex }),
+  });
+  if (!response.ok) throw new Error('Delete turn request failed');
+  return response.json();
+}
+

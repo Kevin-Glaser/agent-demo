@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Loader2, CheckCircle2, XCircle } from 'lucide-react';
+import { Send, Bot, User, Loader2, CheckCircle2, XCircle, Undo2, Trash2 } from 'lucide-react';
 import type { ChatMessage, CallToolResult } from '@/types';
-import { chatStream, parseSSEStream } from '@/api';
+import { chatStream, parseSSEStream, rollback, deleteTurn } from '@/api';
 
 interface ChatProps {
   initialMessage?: string;
@@ -146,6 +146,34 @@ export function Chat({ initialMessage }: ChatProps) {
     }
   };
 
+  const handleRollback = async (messageIndex: number) => {
+    try {
+      const result = await rollback(1, messageIndex);
+      if (result.messages_removed > 0) {
+        // Remove messages from messageIndex onwards
+        setMessages(prev => prev.slice(0, messageIndex));
+      }
+    } catch (error) {
+      console.error('Rollback failed:', error);
+    }
+  };
+
+  const handleDeleteTurn = async (messageIndex: number) => {
+    try {
+      const result = await deleteTurn(messageIndex);
+      if (result.removed > 0) {
+        // Update local state to remove the deleted messages
+        // We need to remove 'result.removed' messages starting from messageIndex
+        setMessages(prev => [
+          ...prev.slice(0, messageIndex),
+          ...prev.slice(messageIndex + result.removed)
+        ]);
+      }
+    } catch (error) {
+      console.error('Delete turn failed:', error);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -172,6 +200,25 @@ export function Chat({ initialMessage }: ChatProps) {
               <div className="flex-shrink-0 w-8 h-8 rounded-full bg-[hsl(var(--secondary))] flex items-center justify-center">
                 <User className="w-5 h-5 text-[hsl(var(--secondary-foreground))]" />
               </div>
+            )}
+
+            {message.role === 'user' && index > 0 && (
+              <>
+                <button
+                  onClick={() => handleRollback(index)}
+                  className="flex-shrink-0 p-1 hover:bg-[hsl(var(--muted))] rounded-full transition-colors"
+                  title="回退此消息"
+                >
+                  <Undo2 className="w-4 h-4 text-[hsl(var(--muted-foreground))]" />
+                </button>
+                <button
+                  onClick={() => handleDeleteTurn(index)}
+                  className="flex-shrink-0 p-1 hover:bg-[hsl(var(--muted))] rounded-full transition-colors"
+                  title="删除此轮对话"
+                >
+                  <Trash2 className="w-4 h-4 text-[hsl(var(--muted-foreground))]" />
+                </button>
+              </>
             )}
           </div>
         ))}

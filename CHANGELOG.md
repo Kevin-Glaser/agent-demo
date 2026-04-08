@@ -8,6 +8,32 @@ All notable changes to this project will be documented in this file.
 - MINOR: New features (backward compatible)
 - PATCH: Bug fixes
 
+## [1.4.0] - 2026-04-08
+
+### Added
+
+#### Advanced Session Compaction
+- **Multi-level Pruning**: 4-level progressive strategy (contextual messages → tool results → reasoning → user boundary)
+- **LLM Summarization**: Structured summary with Goal/Instructions/Discoveries/Accomplished/Relevant files
+- **truncate_middle**: Token budget preserving start and end of large outputs
+- **Contextual Detection**: Detect contextual messages for pruning (<model_switch>, <permissions>, <system-reminder>)
+- **insertReminders**: Multi-turn conversation reminder injection
+
+#### Session History Operations
+- **rollback**: Rollback message history by Turn number or index
+- **delete_turn**: Delete specific Turn
+- **remove_oldest_messages**: FIFO strategy to remove oldest messages
+
+#### New API Endpoints
+- `POST /api/chat/rollback`: Rollback message history
+- `POST /api/chat/delete-turn`: Delete specific turn
+
+#### Frontend Enhancements
+- **Rollback/Delete UI**: Add rollback and delete buttons in the user interface
+
+### Fixed
+- **chat_stream SSE**: SSE chunk for plain text response
+
 ## [1.3.0] - 2026-04-07
 
 ### Added

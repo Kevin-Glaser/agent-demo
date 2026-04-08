@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from models.chat import ChatRequest
+from models.chat import ChatRequest, RollbackRequest, DeleteTurnRequest
 from llm.openai_service import llm_service
 from skills.manager import skill_manager
 
@@ -67,3 +67,25 @@ async def chat(req: ChatRequest):
         return await llm_service.chat(req, skills_message)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LLM/对话处理失败: {e}")
+
+
+@router.post("/chat/rollback")
+async def chat_rollback(req: RollbackRequest):
+    """回退消息历史，支持按 Turn 数或消息索引回退."""
+    try:
+        result = llm_service.conversation_manager.rollback(req.n_turns, req.message_index)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"回退失败: {e}")
+
+
+@router.post("/chat/delete-turn")
+async def chat_delete_turn(req: DeleteTurnRequest):
+    """删除指定位置的 Turn（用户消息 + 对应的助手回复）."""
+    try:
+        result = llm_service.conversation_manager.delete_turn(req.message_index)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"删除失败: {e}")
+
+

@@ -444,6 +444,7 @@ class OpenAIService:
                 kwargs["tool_choice"] = "auto"
             
             reasoning_content = ""
+            assistant_text_content = ""  # Accumulate text content for non-tool responses
             tool_calls_buffer: Dict[int, Dict[str, Any]] = {}
             reasoning_part: Optional[MessagePart] = None
 
@@ -468,6 +469,7 @@ class OpenAIService:
                     continue
 
                 if hasattr(delta, 'content') and delta.content:
+                    assistant_text_content += delta.content
                     yield build_sse_chunk("text-delta", delta.content, delta=delta.content)
 
                 if hasattr(delta, 'tool_calls') and delta.tool_calls:
@@ -480,9 +482,9 @@ class OpenAIService:
                                 "arguments": ""
                             }
 
-                        if hasattr(tc_delta.id) and tc_delta.id:
+                        if hasattr(tc_delta, 'id') and tc_delta.id:
                             tool_calls_buffer[index]["id"] = tc_delta.id
-                        if hasattr(tc_delta.function) and tc_delta.function:
+                        if hasattr(tc_delta, 'function') and tc_delta.function:
                             if hasattr(tc_delta.function, 'name') and tc_delta.function.name:
                                 tool_calls_buffer[index]["name"] = tc_delta.function.name
                             if hasattr(tc_delta.function, 'arguments') and tc_delta.function.arguments:
@@ -581,7 +583,16 @@ class OpenAIService:
                     
                     if hasattr(delta, 'content') and delta.content:
                         yield build_sse_chunk("text-delta", delta.content, delta=delta.content)
-            
+            else:
+                # Non-tool response: send SSE chunk and add to conversation
+                if assistant_text_content:
+                    yield build_sse_chunk("text-delta", assistant_text_content, delta=assistant_text_content)
+                self.conversation_manager.add_assistant_message(
+                    assistant_text_content,
+                    None,
+                    reasoning_content if reasoning_content else None
+                )
+
             yield build_sse_chunk("done", content="")
             
         except Exception as e:
@@ -667,9 +678,9 @@ class OpenAIService:
                             "arguments": ""
                         }
 
-                    if hasattr(tc_delta.id) and tc_delta.id:
+                    if hasattr(tc_delta, 'id') and tc_delta.id:
                         tool_calls_buffer[index]["id"] = tc_delta.id
-                    if hasattr(tc_delta.function) and tc_delta.function:
+                    if hasattr(tc_delta, 'function') and tc_delta.function:
                         if hasattr(tc_delta.function, 'name') and tc_delta.function.name:
                             tool_calls_buffer[index]["name"] = tc_delta.function.name
                         if hasattr(tc_delta.function, 'arguments') and tc_delta.function.arguments:

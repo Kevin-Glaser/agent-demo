@@ -22,3 +22,12 @@ class CallToolResult(BaseModel):
 class ChatResponse(BaseModel):
     response: str | None = ""
     callTools: List[CallToolResult]
+
+
+class RollbackRequest(BaseModel):
+    n_turns: int = 1
+    message_index: int | None = None  # 要回滚到的消息索引（不包括此索引本身之后的消息）
+
+
+class DeleteTurnRequest(BaseModel):
+    message_index: int

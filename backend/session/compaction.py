@@ -239,9 +239,10 @@ class MessageWithParts:
         self.total_tokens = sum(p.token_count for p in self.parts)
 
 
-COMPACTION_BUFFER = 20000
-PRUNE_MINIMUM = 20000
-PROTECTED_TOOLS = ["skill"]
+COMPACTION_BUFFER = 20000        # 溢出检测的缓冲 token 数
+PRUNE_MINIMUM = 20000          # 开始裁剪的最小 token 阈值（低于此值不裁剪）
+PRUNE_PROTECT = 40000          # 保护最近 N token 不被裁剪
+PROTECTED_TOOLS = ["skill"]     # 保护的工具列表，这些工具的输出不会被裁剪
 MAX_STREAMING_CHUNKS = 100
 
 MEDIA_MIME_TYPES = frozenset([
@@ -261,6 +262,204 @@ def isMedia(mime_type: str) -> bool:
 
 
 CONTINUE_MESSAGE = "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
+
+# 可裁剪的上下文消息前缀模式
+CONTEXTUAL_PREFIXES = [
+    "<model_switch>",
+    "<permissions>",
+    "<model拒绝>",
+    "<system-instructions>",
+    "<context-",
+    "<system-reminder>",
+]
+
+# 识别为上下文消息的正则模式
+CONTEXTUAL_PATTERNS = [
+    r"^<model_switch>.*?<\/model_switch>",
+    r"^<permissions>.*?<\/permissions>",
+    r"^<model拒绝>.*?<\/model拒绝>",
+    r"^<system-instructions>.*?<\/system-instructions>",
+    r"^<system-reminder>.*?<\/system-reminder>",
+    r"^\s*<\|.*?\|>\s*$",  # <|...|> 格式的独立行
+]
+
+
+def is_contextual_message(content: str) -> bool:
+    """
+    检测消息内容是否为可裁剪的上下文消息。
+
+    上下文消息通常是：
+    - 系统级指令但不需要长期保留
+    - 模型切换提示
+    - 权限指令
+    - 临时性系统提示
+
+    Args:
+        content: 消息内容
+
+    Returns:
+        True 如果是上下文消息，可以安全裁剪
+    """
+    if not content or not content.strip():
+        return False
+
+    stripped = content.strip()
+
+    # 检查前缀匹配
+    for prefix in CONTEXTUAL_PREFIXES:
+        if stripped.startswith(prefix):
+            return True
+
+    # 检查正则模式匹配
+    import re
+    for pattern in CONTEXTUAL_PATTERNS:
+        if re.match(pattern, stripped, re.DOTALL):
+            return True
+
+    return False
+
+
+def extract_contextual_parts(content: str) -> List[Dict[str, Any]]:
+    """
+    从消息内容中提取所有上下文部分。
+
+    Returns:
+        包含 context_type, start, end, text 的字典列表
+    """
+    import re
+    parts = []
+
+    for pattern in CONTEXTUAL_PATTERNS:
+        for match in re.finditer(pattern, content, re.DOTALL):
+            parts.append({
+                "pattern": pattern,
+                "text": match.group(),
+                "start": match.start(),
+                "end": match.end()
+            })
+
+    return parts
+
+
+def truncate_middle(text: str, max_tokens: int) -> tuple[str, int | None]:
+    """
+    使用 token 预算截断字符串，保留开头和结尾。
+
+    参考 Codex 的 truncate_middle_with_token_budget() 实现。
+
+    当文本超过 max_tokens 时，保留前一半和后一半，中间用省略标记连接。
+    例如："开头...N tokens truncated...结尾"
+
+    Args:
+        text: 要截断的文本
+        max_tokens: 最大 token 数
+
+    Returns:
+        (截断后的文本, 原始token数或None) 元组
+        如果未截断返回(None, None)
+    """
+    if not text:
+        return "", None
+
+    if max_tokens <= 0:
+        return f"…0 tokens truncated…", None
+
+    # 4 字符约等于 1 token
+    max_bytes = max_tokens * 4
+
+    if len(text) <= max_bytes:
+        return text, None
+
+    # 将 budget 分成两半给前缀和后缀
+    prefix_budget = max_bytes // 2
+    suffix_budget = max_bytes - prefix_budget
+
+    # 找到前缀的截断位置
+    prefix_end = 0
+    prefix_chars = 0
+    for idx, char in enumerate(text):
+        char_bytes = len(char.encode('utf-8'))
+        if prefix_end + char_bytes <= prefix_budget:
+            prefix_end += char_bytes
+            prefix_chars += 1
+        else:
+            break
+
+    # 找到后缀的开始位置（从末尾）
+    suffix_start = len(text)
+    suffix_chars = 0
+    for idx in range(len(text) - 1, -1, -1):
+        char_bytes = len(text[idx].encode('utf-8'))
+        if len(text) - suffix_start + char_bytes <= suffix_budget:
+            suffix_start -= char_bytes
+            suffix_chars += 1
+        else:
+            break
+
+    if suffix_start < prefix_end:
+        suffix_start = prefix_end
+
+    # 计算被移除的 token 数
+    removed_chars = len(text) - (suffix_start - prefix_end)
+    removed_tokens = removed_chars // 4
+
+    prefix = text[:prefix_end]
+    suffix = text[suffix_start:] if suffix_start < len(text) else ""
+
+    marker = f"…{removed_tokens} tokens truncated…"
+
+    return prefix + marker + suffix, (len(text) + 3) // 4
+
+
+def truncate_middle_chars(text: str, max_chars: int) -> str:
+    """
+    使用字符数截断字符串，保留开头和结尾。
+
+    Args:
+        text: 要截断的文本
+        max_chars: 最大字符数
+
+    Returns:
+        截断后的文本
+    """
+    if not text:
+        return ""
+
+    if max_chars <= 0:
+        removed = len(text)
+        return f"…{removed} chars truncated…"
+
+    if len(text) <= max_chars:
+        return text
+
+    prefix_budget = max_chars // 2
+    suffix_budget = max_chars - prefix_budget
+
+    # 找到前缀
+    prefix_end = 0
+    for idx, char in enumerate(text):
+        if prefix_end + 1 <= prefix_budget:
+            prefix_end += 1
+        else:
+            break
+
+    # 找到后缀
+    suffix_start = len(text)
+    for idx in range(len(text) - 1, -1, -1):
+        if len(text) - suffix_start + 1 <= suffix_budget:
+            suffix_start -= 1
+        else:
+            break
+
+    if suffix_start < prefix_end:
+        suffix_start = prefix_end
+
+    prefix = text[:prefix_end]
+    suffix = text[suffix_start:] if suffix_start < len(text) else ""
+    removed_chars = len(text) - (suffix_start - prefix_end)
+
+    return prefix + f"…{removed_chars} chars truncated…" + suffix
+
 
 STRUCTURED_OUTPUT_DESCRIPTION = """Use this tool to return your final response in the requested structured format.
 
@@ -787,55 +986,96 @@ class ConversationCompaction:
     
     def get_usable_tokens(self, max_output_tokens: int = 4096) -> int:
         return self.get_total_tokens_with_reasoning() - max_output_tokens
-    
+
     def prune(self, force: bool = False) -> int:
+        """
+        裁剪旧的 tool 结果输出。
+
+        裁剪策略（参考 OpenCode）：
+        1. 只有当需要裁剪的 token 数超过 PRUNE_MINIMUM (20000) 时才裁剪
+        2. 保护最近 PRUNE_PROTECT (40000) token 不被裁剪
+        3. 跳过 PROTECTED_TOOLS (["skill"]) 中的工具输出
+        4. 跳过已 compacted 的 parts
+        5. 跳过 PENDING/EXECUTING 状态的 tool calls
+
+        Args:
+            force: 是否强制裁剪（忽略阈值检查）
+
+        Returns:
+            裁剪的 token 数
+        """
         if len(self.messages) < 4 and not force:
             return 0
-        
-        prune_protect = settings.CONVERSATION_PRUNE_PROTECT
+
+        # 检查是否需要裁剪（token 总量是否超过最小阈值）
+        current_tokens = self.get_total_tokens_with_reasoning()
+        if current_tokens < PRUNE_MINIMUM and not force:
+            return 0
+
         pruned_tokens = 0
+        accumulated_pruned = 0  # 已裁剪的 token 累积量
         turns = 0
         msg_index = len(self.messages) - 1
-        
+
         while msg_index >= 0:
             msg = self.messages[msg_index]
-            
+
             if msg.role == "user":
                 turns += 1
-            
+
+            # 保护最近 2 个 turn 不被裁剪（除非强制）
             if turns < 2 and not force:
                 msg_index -= 1
                 continue
-            
+
             if msg.is_summary:
                 break
-            
+
             if msg.role == "assistant" and msg.parts:
                 for part_index in range(len(msg.parts) - 1, -1, -1):
                     part = msg.parts[part_index]
-                    
-                    if part.part_type == PartType.TOOL.value and part.tool_name not in PROTECTED_TOOLS:
-                        if part.compacted:
-                            break
-                        
-                        if part.tool_call_state in (ToolCallState.PENDING, ToolCallState.EXECUTING):
-                            continue
-                        
-                        part_tokens = part.token_count or estimate(part.content)
-                        self.total_tokens -= part_tokens
-                        part.compacted = True
-                        part.content = ""
-                        pruned_tokens += part_tokens
-                        
-                        if not force and self.get_total_tokens_with_reasoning() < prune_protect:
-                            break
+
+                    # 只处理 tool 类型的 part
+                    if part.part_type != PartType.TOOL.value:
+                        continue
+
+                    # 跳过受保护的工具
+                    if part.tool_name in PROTECTED_TOOLS:
+                        continue
+
+                    # 跳过已 compacted 的 part
+                    if part.compacted:
+                        break
+
+                    # 跳过 PENDING/EXECUTING 状态的 tool calls
+                    if part.tool_call_state in (ToolCallState.PENDING, ToolCallState.EXECUTING):
+                        continue
+
+                    # 计算这个 part 的 token 数
+                    part_tokens = part.token_count or estimate(part.content)
+                    accumulated_pruned += part_tokens
+
+                    # 检查是否达到保护阈值（停止裁剪）
+                    # 当累积裁剪量超过 PRUNE_PROTECT 时停止
+                    if not force and accumulated_pruned > PRUNE_PROTECT:
+                        break
+
+                    # 执行裁剪：清空内容，标记为 compacted
+                    self.total_tokens -= part_tokens
+                    part.compacted = True
+                    part.content = ""
+                    pruned_tokens += part_tokens
+
+                    # 裁剪后再次检查总 token 是否低于保护阈值
+                    if not force and self.get_total_tokens_with_reasoning() < PRUNE_PROTECT:
+                        break
                 else:
                     msg_index -= 1
                     continue
                 break
-            
+
             msg_index -= 1
-        
+
         return pruned_tokens
     
     def prune_by_type(self, part_types: List[PartType], protect_active: bool = True) -> int:
@@ -853,7 +1093,131 @@ class ConversationCompaction:
                     part.content = ""
                     pruned_tokens += part_tokens
         return pruned_tokens
-    
+
+    def truncate_tool_outputs(self, max_tokens_per_output: int = 500) -> Dict[str, Any]:
+        """
+        使用中间保留截断缩小大型工具输出。
+
+        与 prune() 不同，prune() 完全清空工具输出内容，
+        而 truncate_tool_outputs() 保留首尾部分，用省略标记连接。
+
+        Args:
+            max_tokens_per_output: 每个工具输出的最大 token 数
+
+        Returns:
+            包含截断结果的字典
+        """
+        result = {
+            "tools_truncated": 0,
+            "tokens_saved": 0,
+            "details": []
+        }
+
+        for msg in self.messages:
+            for part in msg.parts:
+                if part.part_type != PartType.TOOL.value:
+                    continue
+
+                if part.compacted:
+                    continue
+
+                if part.tool_call_state in (ToolCallState.PENDING, ToolCallState.EXECUTING):
+                    continue
+
+                current_tokens = part.token_count or estimate(part.content)
+                if current_tokens <= max_tokens_per_output:
+                    continue
+
+                # 使用 truncate_middle 截断
+                original_content = part.content
+                truncated, _ = truncate_middle(original_content, max_tokens_per_output)
+
+                tokens_saved = current_tokens - (len(truncated) // 4)
+                part.content = truncated
+                part.token_count = len(truncated) // 4
+                self.total_tokens -= tokens_saved
+
+                result["tools_truncated"] += 1
+                result["tokens_saved"] += tokens_saved
+                result["details"].append({
+                    "tool_name": part.tool_name,
+                    "original_tokens": current_tokens,
+                    "truncated_tokens": part.token_count
+                })
+
+        return result
+
+    def prune_contextual_messages(self, protect_recent: int = 2) -> Dict[str, Any]:
+        """
+        裁剪可识别的上下文消息。
+
+        识别并裁剪：
+        - <model_switch>...</model_switch>
+        - <permissions>...</permissions>
+        - <model拒绝>...</model拒绝>
+        - <system-instructions>...</system-instructions>
+        - <system-reminder>...</system-reminder>
+
+        Args:
+            protect_recent: 保留最近N条消息的上下文不被裁剪
+
+        Returns:
+            裁剪结果统计
+        """
+        result = {
+            "messages_scanned": 0,
+            "messages_modified": 0,
+            "parts_removed": 0,
+            "tokens_saved": 0,
+            "details": []
+        }
+
+        # 跳过最近 N 条消息
+        protected_start = max(0, len(self.messages) - protect_recent)
+
+        for i, msg in enumerate(self.messages):
+            result["messages_scanned"] += 1
+
+            if i >= protected_start:
+                continue
+
+            # 检查主内容
+            if msg.content and is_contextual_message(msg.content):
+                tokens = estimate(msg.content)
+                result["tokens_saved"] += tokens
+                result["messages_modified"] += 1
+                result["details"].append({
+                    "message_index": i,
+                    "role": msg.role,
+                    "type": "full_content",
+                    "tokens": tokens
+                })
+                # 清空内容但保留消息结构
+                msg.content = "[Contextual message removed]"
+                continue
+
+            # 检查 parts
+            if msg.parts:
+                for part in msg.parts:
+                    if part.part_type == PartType.TEXT.value:
+                        if part.content and is_contextual_message(part.content):
+                            tokens = part.token_count or estimate(part.content)
+                            result["tokens_saved"] += tokens
+                            result["parts_removed"] += 1
+                            result["details"].append({
+                                "message_index": i,
+                                "role": msg.role,
+                                "type": "text_part",
+                                "tokens": tokens
+                            })
+                            part.content = "[Contextual content removed]"
+                            part.compacted = True
+
+        if result["tokens_saved"] > 0:
+            self._update_total_tokens()
+
+        return result
+
     def prune_reasoning_only(self) -> int:
         pruned = 0
         for msg in self.messages:
@@ -870,7 +1234,377 @@ class ConversationCompaction:
         self.reasoning_tokens = 0
         self._update_total_tokens()
         return pruned
-    
+
+    def prune_to_user_boundary(self, protect_turns: int = 2, max_turns: int = None) -> int:
+        """
+        在用户Turn边界处裁剪整条消息。
+
+        确保裁剪发生在用户消息边界上，保护最近N个完整Turn。
+
+        Args:
+            protect_turns: 保护最近N个完整Turn不被删除，默认2
+            max_turns: 最多保留多少个Turn，None表示不限制
+
+        Returns:
+            删除的消息数量
+        """
+        if len(self.messages) < 4:
+            return 0
+
+        # 找到所有用户消息的位置（从后往前）
+        user_positions = []
+        for i, msg in enumerate(self.messages):
+            if msg.role == "user":
+                user_positions.append(i)
+
+        if not user_positions:
+            return 0
+
+        # 确定要保护的最早用户消息位置
+        protect_idx: int = None
+        if max_turns is not None and len(user_positions) > max_turns:
+            # 按max_turns限制
+            protect_idx = user_positions[len(user_positions) - max_turns]
+        elif len(user_positions) > protect_turns:
+            # 保留protect_turns个用户Turn
+            protect_idx = user_positions[len(user_positions) - protect_turns]
+
+        if protect_idx is None:
+            return 0
+
+        # 找到实际的裁剪点：在protect_idx位置的消息之前，找最近的用户消息边界
+        # 我们要删除protect_idx之前的所有消息
+        pruned_count = 0
+        tokens_saved = 0
+
+        # 找出要删除的消息范围（从0到protect_idx）
+        # 但要保留保护范围内的消息结构完整性
+        messages_to_remove = []
+        for i in range(protect_idx):
+            msg = self.messages[i]
+            # 计算这条消息的token
+            msg_tokens = estimate(msg.content)
+            msg_tokens += sum(p.token_count or estimate(p.content) for p in msg.parts)
+            if msg.reasoning:
+                msg_tokens += estimate(msg.reasoning)
+            tokens_saved += msg_tokens
+            messages_to_remove.append(i)
+
+        # 从后往前删除，避免索引混乱
+        for i in reversed(messages_to_remove):
+            self.messages.pop(i)
+            pruned_count += 1
+
+        # 清理summary消息（如果第一条是summary，保留它）
+        # 确保summary在compact之后的第一条消息位置
+        if self.messages and self.messages[0].is_summary:
+            # summary应该在最前面，检查是否需要移动
+            pass
+
+        self._update_total_tokens()
+        return pruned_count
+
+    def rollback(self, n_turns: int = 1, message_index: int = None) -> Dict[str, Any]:
+        """
+        回退消息历史。
+
+        参考 Codex 的 drop_last_n_user_turns() 实现。
+        支持两种模式：
+        - 按 Turn 回退：删除最后 N 个用户 Turn（包括用户消息和对应的助手回复）
+        - 按索引回退：删除指定消息索引之后的所有消息
+
+        Args:
+            n_turns: 要回退的 Turn 数量，默认为 1
+            message_index: 要回滚到的消息索引（不包括此索引之后的消息），优先于 n_turns
+
+        Returns:
+            包含回退结果的字典：
+            - rolled_back: 实际回退的 Turn 数量
+            - messages_removed: 删除的消息数量
+            - tokens_removed: 删除的 token 数量
+            - remaining_messages: 剩余消息数量
+        """
+        result = {
+            "requested_turns": n_turns,
+            "requested_index": message_index,
+            "rolled_back": 0,
+            "messages_removed": 0,
+            "tokens_removed": 0,
+            "remaining_messages": len(self.messages)
+        }
+
+        if message_index is not None:
+            # 按索引回退：删除 message_index 之后的所有消息
+            if message_index < 0 or message_index >= len(self.messages):
+                return result
+
+            # 计算将被删除的 token 数
+            tokens_to_remove = 0
+            for i in range(message_index, len(self.messages)):
+                msg = self.messages[i]
+                tokens_to_remove += estimate(msg.content)
+                tokens_to_remove += sum(p.token_count or estimate(p.content) for p in msg.parts)
+                if msg.reasoning:
+                    tokens_to_remove += estimate(msg.reasoning)
+
+            removed_messages = self.messages[message_index:]
+            self.messages = self.messages[:message_index]
+
+            result["messages_removed"] = len(removed_messages)
+            result["tokens_removed"] = tokens_to_remove
+            result["remaining_messages"] = len(self.messages)
+
+            # 计算回退的 turn 数（从 message_index 到末尾有多少个完整 turn）
+            # 找到 message_index 之前的最后一个 user 消息
+            user_count = 0
+            for i in range(message_index, len(removed_messages) + message_index):
+                if i < len(self.messages) and self.messages[i].role == "user":
+                    user_count += 1
+            # 加上 removed_messages 中的 user 消息
+            for msg in removed_messages:
+                if msg.role == "user":
+                    user_count += 1
+            result["rolled_back"] = user_count
+
+            self._update_total_tokens()
+            return result
+
+        if n_turns <= 0 or len(self.messages) < 2:
+            return result
+
+        # 找到所有用户消息的位置
+        user_positions = []
+        for i, msg in enumerate(self.messages):
+            if msg.role == "user":
+                user_positions.append(i)
+
+        if not user_positions:
+            return result
+
+        # 确定要回退到的位置
+        # 如果请求回退 2 个 turn，而我们有 5 个 user turns，
+        # 则回退到最后第 2 个 user turn 之前
+        cut_idx: int
+        if n_turns >= len(user_positions):
+            # 回退所有 turn，保留到第一个用户消息之前
+            cut_idx = user_positions[0]
+        else:
+            # 回退到最后 n_turns 个 turn
+            cut_idx = user_positions[len(user_positions) - n_turns]
+
+        # 计算将被删除的 token 数
+        tokens_to_remove = 0
+        for i in range(cut_idx, len(self.messages)):
+            msg = self.messages[i]
+            tokens_to_remove += estimate(msg.content)
+            tokens_to_remove += sum(p.token_count or estimate(p.content) for p in msg.parts)
+            if msg.reasoning:
+                tokens_to_remove += estimate(msg.reasoning)
+
+        # 删除 cut_idx 之后的所有消息
+        removed_messages = self.messages[cut_idx:]
+        self.messages = self.messages[:cut_idx]
+
+        # 更新统计
+        result["rolled_back"] = min(n_turns, len(user_positions))
+        result["messages_removed"] = len(removed_messages)
+        result["tokens_removed"] = tokens_to_remove
+        result["remaining_messages"] = len(self.messages)
+
+        # 重新计算 total_tokens
+        self._update_total_tokens()
+
+        return result
+
+    def delete_turn(self, message_index: int) -> Dict[str, Any]:
+        """
+        删除指定位置的 Turn（用户消息 + 对应的助手回复）。
+
+        给定一个用户消息的索引，删除该用户消息以及紧随其后的助手回复。
+        如果指定的是助手消息索引，则删除该助手消息。
+        如果是最后一条消息无法配对，则只删除该消息。
+
+        Args:
+            message_index: 要删除的消息索引
+
+        Returns:
+            包含删除结果的字典
+        """
+        result = {
+            "removed": 0,
+            "tokens_removed": 0,
+            "remaining_messages": len(self.messages)
+        }
+
+        if message_index < 0 or message_index >= len(self.messages):
+            return result
+
+        msg = self.messages[message_index]
+
+        # 计算这条消息的 token 数
+        def calc_tokens(m: MessageWithParts) -> int:
+            tokens = estimate(m.content)
+            tokens += sum(p.token_count or estimate(p.content) for p in m.parts)
+            if m.reasoning:
+                tokens += estimate(m.reasoning)
+            return tokens
+
+        tokens_to_remove = calc_tokens(msg)
+        to_delete = [message_index]
+
+        # 如果是用户消息，尝试找到并删除紧随的助手回复
+        if msg.role == "user" and message_index + 1 < len(self.messages):
+            next_msg = self.messages[message_index + 1]
+            if next_msg.role == "assistant":
+                tokens_to_remove += calc_tokens(next_msg)
+                to_delete.append(message_index + 1)
+        # 如果是助手消息，尝试找到并删除紧随的用户消息（不常见）
+        elif msg.role == "assistant" and message_index + 1 < len(self.messages):
+            next_msg = self.messages[message_index + 1]
+            if next_msg.role == "user":
+                tokens_to_remove += calc_tokens(next_msg)
+                to_delete.append(message_index + 1)
+
+        # 删除消息（从后往前删，避免索引偏移）
+        for idx in sorted(to_delete, reverse=True):
+            self.messages.pop(idx)
+
+        result["removed"] = len(to_delete)
+        result["tokens_removed"] = tokens_to_remove
+        result["remaining_messages"] = len(self.messages)
+
+        self._update_total_tokens()
+        return result
+
+    def remove_oldest_messages(self, n: int) -> Dict[str, Any]:
+        """
+        删除最早的 N 条消息（FIFO 策略）。
+
+        与 rollback() 不同：
+        - rollback() 从消息末尾删除（删除最新的）
+        - remove_oldest_messages() 从消息开头删除（删除最旧的）
+
+        Args:
+            n: 要删除的最早消息数量
+
+        Returns:
+            包含删除结果的字典
+        """
+        result = {
+            "removed": 0,
+            "tokens_removed": 0,
+            "remaining_messages": len(self.messages)
+        }
+
+        if n <= 0 or not self.messages:
+            return result
+
+        # 保护第一条消息（通常是 summary，标记了 is_summary）
+        protect_first = 1 if self.messages and self.messages[0].is_summary else 0
+
+        # 计算要删除的消息数量（不能超过可删除范围）
+        max_removable = len(self.messages) - protect_first
+        to_remove = min(n, max_removable)
+
+        if to_remove <= 0:
+            return result
+
+        # 计算将被删除的 token 数（从 protect_first 之后开始算）
+        tokens_to_remove = 0
+        for i in range(protect_first, protect_first + to_remove):
+            msg = self.messages[i]
+            tokens_to_remove += estimate(msg.content)
+            tokens_to_remove += sum(p.token_count or estimate(p.content) for p in msg.parts)
+            if msg.reasoning:
+                tokens_to_remove += estimate(msg.reasoning)
+
+        # 删除消息（跳过保护的消息）
+        start_idx = protect_first
+        end_idx = protect_first + to_remove
+        removed = self.messages[start_idx:end_idx]
+        self.messages = self.messages[:start_idx] + self.messages[end_idx:]
+
+        result["removed"] = len(removed)
+        result["tokens_removed"] = tokens_to_remove
+        result["remaining_messages"] = len(self.messages)
+
+        self._update_total_tokens()
+        return result
+
+    def smart_prune(self) -> Dict[str, Any]:
+        """
+        分层裁剪策略，按保守程度从低到高执行：
+
+        Level 0: 裁剪上下文消息（如 <model_switch>, <permissions> 等）
+        Level 1: 清理已完成tool的旧结果（保守，只清空内容）
+        Level 2: 清理 reasoning 内容
+        Level 3: 按边界裁剪整条消息（激进）
+
+        Returns:
+            包含各层级裁剪结果的字典
+        """
+        results = {
+            "actions": [],
+            "final_tokens": self.get_total_tokens_with_reasoning(),
+            "overflow": self.is_overflow()
+        }
+
+        # Level 0: 裁剪上下文消息
+        contextual_result = self.prune_contextual_messages(protect_recent=2)
+        if contextual_result["tokens_saved"] > 0:
+            results["actions"].append({
+                "level": 0,
+                "action": "prune_contextual",
+                "pruned_tokens": contextual_result["tokens_saved"],
+                "messages_modified": contextual_result["messages_modified"],
+                "parts_removed": contextual_result["parts_removed"]
+            })
+
+        # Level 1: 清理已完成tool的旧结果
+        pruned1 = self.prune()
+        if pruned1 > 0:
+            results["actions"].append({
+                "level": 1,
+                "action": "prune_tool_results",
+                "pruned_tokens": pruned1
+            })
+
+        # 检查是否还需要继续
+        if self.is_overflow():
+            # Level 2: 清理 reasoning 内容
+            pruned2 = self.prune_reasoning_only()
+            if pruned2 > 0:
+                results["actions"].append({
+                    "level": 2,
+                    "action": "prune_reasoning",
+                    "pruned_tokens": pruned2
+                })
+
+        # 再次检查是否还需要继续
+        if self.is_overflow():
+            # Level 3: 按边界裁剪整条消息
+            # 保护2个turn，保留最多20个turn
+            protect_turns = 2
+            max_turns = 20
+
+            # 计算当前有多少个用户turn
+            user_count = sum(1 for m in self.messages if m.role == "user")
+            if user_count > protect_turns:
+                pruned3 = self.prune_to_user_boundary(
+                    protect_turns=protect_turns,
+                    max_turns=max_turns
+                )
+                if pruned3 > 0:
+                    results["actions"].append({
+                        "level": 3,
+                        "action": "prune_user_boundary",
+                        "pruned_messages": pruned3
+                    })
+
+        results["final_tokens"] = self.get_total_tokens_with_reasoning()
+        results["overflow"] = self.is_overflow()
+        return results
+
     def compact_streaming_parts(self) -> int:
         compacted = 0
         for msg in self.messages:
@@ -1206,20 +1940,7 @@ class ConversationManager:
                             }
 
                             # Update the subtask part with the result
-                            subtask_part.tool_call_state = ToolCallState.COMPLETED
-                            subtask_part.content = json.dumps(subtask_result)
-                            subtask_part.is_streaming_done = True
-
                             stats["subtasks_executed"] = stats.get("subtasks_executed", 0) + 1
-
-            # Check overflow
-            if last_finished and not last_finished.is_summary:
-                if self.compaction.is_overflow(model_context_limit=self.max_tokens):
-                    result = self.compaction.process(llm_summarize, abort_signal=abort_signal, auto=True)
-                    stats["compactions"] += 1
-                    stats["summary_length"] = result.get("summary_length", 0)
-                    self._history = self._history[-10:] if len(self._history) > 10 else self._history
-                    continue  # After compaction, continue to next iteration
 
             # Check if we should exit the loop
             # lastAssistant.finish && !["tool-calls", "unknown"].includes(lastAssistant.finish) && lastUser.id < lastAssistant.id
@@ -1274,6 +1995,7 @@ class ConversationManager:
                 )
 
                 # Process stream internally
+                # SessionProcessor 在 finish-step 时检测实际 token 消耗并设置 needs_compaction
                 result = await processor.process_stream(stream_gen)
 
                 # Handle structured output result
@@ -1282,42 +2004,45 @@ class ConversationManager:
                     stats["structured_output"] = processor.structured_output
                     break
 
+                # 处理完成后的控制流
                 if result == "stop":
                     break
                 elif result == "continue":
                     continue
                 elif result == "compact":
-                    # Request compaction
+                    # 步骤完成后检测到溢出，使用分层裁剪策略
+                    # 这是精确检测（基于 finish-step 返回的实际 token 消耗）
+                    prune_result = self.compaction.smart_prune()
+                    stats["prune_levels"] = prune_result.get("actions", [])
+                    stats["pruned_tokens"] = prune_result.get("final_tokens", 0)
+
+                    # 如果裁剪后仍然溢出，执行摘要压缩
                     if self.compaction.is_overflow(model_context_limit=self.max_tokens):
-                        prune_result = self.compaction.prune()
-                        stats["pruned_tokens"] += prune_result
-                        if self.compaction.is_overflow(model_context_limit=self.max_tokens):
-                            compact_result = self.compaction.process(llm_summarize, abort_signal=abort_signal, auto=True)
-                            stats["compactions"] += 1
-                            self._history = self._history[-10:] if len(self._history) > 10 else self._history
+                        compact_result = self.compaction.process(llm_summarize, abort_signal=abort_signal, auto=True)
+                        stats["compactions"] = stats.get("compactions", 0) + 1
+                        stats["summary_length"] = compact_result.get("summary_length", 0)
+                        self._history = self._history[-10:] if len(self._history) > 10 else self._history
 
         return stats
     
     def check_and_compact(self, llm_summarize: Callable[[str], str], abort_signal: Any = None) -> Dict[str, Any]:
         stats = self.compaction.get_stats()
-        
+
         if not self.compaction.is_overflow(model_context_limit=self.max_tokens):
             return stats
-        
-        pruned = self.compaction.prune()
-        stats["pruned_tokens"] = pruned
-        
-        if self.compaction.is_overflow(model_context_limit=self.max_tokens):
-            reasoning_pruned = self.compaction.prune_reasoning_only()
-            stats["reasoning_pruned"] = reasoning_pruned
-        
+
+        # 使用分层裁剪策略 (Level 0-3)
+        prune_result = self.compaction.smart_prune()
+        stats["prune_levels"] = prune_result.get("actions", [])
+
+        # 如果裁剪后仍然溢出，执行摘要压缩
         if self.compaction.is_overflow(model_context_limit=self.max_tokens):
             result = self.compaction.process(llm_summarize, abort_signal=abort_signal, auto=True)
             stats["compacted"] = True
             stats["summary_length"] = result.get("summary_length", 0)
             stats["added_continue_message"] = result.get("added_continue_message", False)
             self._history = self._history[-10:] if len(self._history) > 10 else self._history
-        
+
         return stats
 
     def resolve_tools(self, tools_config: Dict[str, bool] = None) -> List[Dict[str, Any]]:
@@ -1483,7 +2208,65 @@ class ConversationManager:
     
     def prune_by_type(self, part_types: List[PartType], protect_active: bool = True) -> int:
         return self.compaction.prune_by_type(part_types, protect_active)
-    
+
+    def prune_to_user_boundary(self, protect_turns: int = 2, max_turns: int = None) -> int:
+        return self.compaction.prune_to_user_boundary(protect_turns, max_turns)
+
+    def prune_contextual_messages(self, protect_recent: int = 2) -> Dict[str, Any]:
+        return self.compaction.prune_contextual_messages(protect_recent)
+
+    def rollback(self, n_turns: int = 1, message_index: int = None) -> Dict[str, Any]:
+        """
+        回退消息历史。
+
+        Args:
+            n_turns: 要回退的 Turn 数量，默认为 1
+            message_index: 要回滚到的消息索引，优先于 n_turns
+
+        Returns:
+            回退结果字典
+        """
+        return self.compaction.rollback(n_turns, message_index)
+
+    def delete_turn(self, message_index: int) -> Dict[str, Any]:
+        """
+        删除指定位置的 Turn（用户消息 + 对应的助手回复）。
+
+        Args:
+            message_index: 要删除的消息索引
+
+        Returns:
+            删除结果字典
+        """
+        return self.compaction.delete_turn(message_index)
+
+    def remove_oldest_messages(self, n: int = 1) -> Dict[str, Any]:
+        """
+        删除最早的 N 条消息（FIFO 策略）。
+
+        Args:
+            n: 要删除的最早消息数量
+
+        Returns:
+            删除结果字典
+        """
+        return self.compaction.remove_oldest_messages(n)
+
+    def truncate_tool_outputs(self, max_tokens_per_output: int = 500) -> Dict[str, Any]:
+        """
+        使用中间保留截断缩小大型工具输出。
+
+        Args:
+            max_tokens_per_output: 每个工具输出的最大 token 数
+
+        Returns:
+            截断结果字典
+        """
+        return self.compaction.truncate_tool_outputs(max_tokens_per_output)
+
+    def smart_prune(self) -> Dict[str, Any]:
+        return self.compaction.smart_prune()
+
     def force_compact(self) -> Dict[str, Any]:
         stats = {"actions": []}
         
