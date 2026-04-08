@@ -248,8 +248,18 @@ class OpenAIService:
         history = self.conversation_manager.get_conversation_context()
         return [{"role": m.role, "content": m.content} for m in history]
     
-    def _extract_reasoning(self, message) -> Optional[str]:
-        # Possible field names for reasoning content from different providers
+    def _extract_reasoning(self, message, reasoning_item=None) -> Optional[str]:
+        """
+        Extract reasoning content from message.
+
+        Args:
+            message: The chat completion message
+            reasoning_item: Optional ReasoningItem for interleaved content parsing
+
+        Returns:
+            Extracted reasoning string or None
+        """
+        # 1. Try to extract from message attributes (API native reasoning)
         reasoning_fields = [
             'reasoning',
             'completion_reasoning',
@@ -262,6 +272,15 @@ class OpenAIService:
             value = self._get_nested_reasoning(message, field)
             if value:
                 return value
+
+        # 2. Try interleaved content parsing if reasoning_item provided
+        if reasoning_item and hasattr(message, 'content') and message.content:
+            from session.reasoning import InterleavedParser
+            reasoning, _ = InterleavedParser.extract_from_stream(message.content or "")
+            if reasoning:
+                reasoning_item.add_interleaved("reasoning", reasoning)
+                return reasoning
+
         return None
 
     def _get_nested_reasoning(self, obj, field: str) -> Optional[str]:
